@@ -178,16 +178,20 @@ flowchart LR
 ### Environment variables (names only — never commit real values)
 
 ```bash
-# Example .env — replace with sandbox values from the Yuno dashboard
+# Example .env — replace secrets with sandbox values from the Yuno dashboard
+# Required for local / operational MCP (Agent Toolkit, yuno-mcp, Remote MCP)
 YUNO_PUBLIC_API_KEY=your_sandbox_public_api_key
 YUNO_PRIVATE_SECRET_KEY=your_sandbox_private_secret_key
-YUNO_ACCOUNT_ID=your_sandbox_account_id
+YUNO_ACCOUNT_CODE=your_sandbox_account_code
+# Optional defaults for local operational MCP checkout/payment tools
+YUNO_COUNTRY_CODE=your_country_code
+YUNO_CURRENCY=your_currency
+# App / API helpers (not MCP auth headers)
 YUNO_WEBHOOK_SECRET=your_webhook_hmac_or_shared_secret
 YUNO_API_BASE_URL=https://api-sandbox.y.uno
-# Optional: docs MCP endpoint (read-only) vs operational MCP (authenticated)
-YUNO_DOCS_MCP_URL=your_docs_mcp_url
-YUNO_OPS_MCP_URL=your_operational_mcp_url
-YUNO_OPS_MCP_API_KEY=your_operational_mcp_api_key
+# Public MCP endpoints (non-secret URLs from Yuno docs)
+YUNO_DOCS_MCP_URL=https://docs.y.uno/mcp
+YUNO_OPS_MCP_URL=https://mcp.prod.y.uno/mcp
 ```
 
 ### Setup (to be filled when code lands)
