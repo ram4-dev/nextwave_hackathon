@@ -275,16 +275,33 @@ export async function verifySessionToken(
   }
   await ensureSigningKey(repo, config);
   const store = await repo.getStore();
-  const key =
-    store.signingKeys.find((k) => k.kid === header.kid) ??
-    store.signingKeys.find((k) => k.active);
-  if (!key) throw new DomainError('Unknown session key', 'JWT_KID');
-  const publicKey = await importJWK(key.publicJwk, 'ES256');
-  const { payload } = await jwtVerify(token, publicKey, {
-    issuer: config.KYA_ISSUER,
-    audience: 'kya-session',
-    algorithms: ['ES256'],
-  });
+  const keys = store.signingKeys
+    .filter((key) => key.kid === header.kid)
+    .sort(
+      (a, b) =>
+        Number(b.active) - Number(a.active) ||
+        Date.parse(b.createdAt) - Date.parse(a.createdAt),
+    );
+  if (keys.length === 0) throw new DomainError('Unknown session key', 'UNAUTHORIZED');
+  let payload: Awaited<ReturnType<typeof jwtVerify>>['payload'] | undefined;
+  for (const key of keys) {
+    try {
+      const publicKey = await importJWK(key.publicJwk, 'ES256');
+      payload = (
+        await jwtVerify(token, publicKey, {
+          issuer: config.KYA_ISSUER,
+          audience: 'kya-session',
+          algorithms: ['ES256'],
+        })
+      ).payload;
+      break;
+    } catch {
+      // Legacy stores may contain duplicate kid values from the former rotation bug.
+    }
+  }
+  if (!payload) {
+    throw new DomainError('Invalid session token', 'UNAUTHORIZED');
+  }
   const sub = String(payload.sub ?? '');
   if (!/^0x[a-fA-F0-9]{40}$/.test(sub)) {
     throw new DomainError('Invalid session subject', 'SESSION');

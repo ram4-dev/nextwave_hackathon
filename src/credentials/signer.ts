@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { exportJWK, generateKeyPair, importJWK } from 'jose';
 import type { AppConfig } from '../config/env.js';
 import { DomainError } from '../domain/state-machine.js';
-import { sanitizePublicJwk } from '../crypto/local-agent-key.js';
+import { sanitizePublicJwk, thumbprintFromJwk } from '../crypto/local-agent-key.js';
 import type { Repository, SigningKeyPublicRecord } from '../persistence/repository.js';
 import { newId } from '../persistence/repository.js';
 
@@ -126,6 +126,53 @@ export async function ensureSigningKey(
   const store = await repo.getStore();
   const activePublic = store.signingKeys.find((k) => k.active);
 
+  if (config.KYA_MODE === 'live') {
+    const privateJwk = await loadLivePrivateJwk(config);
+    const publicJwk = sanitizePublicJwk({ ...privateJwk });
+    const publicThumbprint = await thumbprintFromJwk(publicJwk);
+    const rawConfiguredKid = (privateJwk as JsonWebKey & { kid?: unknown }).kid;
+    if (
+      rawConfiguredKid != null &&
+      (typeof rawConfiguredKid !== 'string' || rawConfiguredKid.trim() === '')
+    ) {
+      throw new DomainError('Signing key kid must be a non-empty string', 'SIGNING_KEY_INVALID');
+    }
+    const kid =
+      typeof rawConfiguredKid === 'string'
+        ? rawConfiguredKid.trim()
+        : `kya-${publicThumbprint}`;
+
+    const recordsWithKid = store.signingKeys.filter((record) => record.kid === kid);
+    for (const record of recordsWithKid) {
+      const recordThumbprint = await thumbprintFromJwk(record.publicJwk);
+      if (recordThumbprint !== publicThumbprint) {
+        throw new DomainError(
+          `Signing key kid ${kid} conflicts with different public key metadata`,
+          'SIGNING_KEY_INVALID',
+        );
+      }
+    }
+
+    const activeMatches =
+      activePublic?.kid === kid &&
+      (await thumbprintFromJwk(activePublic.publicJwk)) === publicThumbprint;
+    const activeCount = store.signingKeys.filter((record) => record.active).length;
+    if (!activeMatches || activeCount !== 1 || recordsWithKid.length !== 1) {
+      await repo.withLock(async (current) => {
+        for (const record of current.signingKeys) record.active = false;
+        current.signingKeys = current.signingKeys.filter((record) => record.kid !== kid);
+        current.signingKeys.push(publicRecordFrom(kid, publicJwk));
+      });
+    }
+
+    ephemeralPrivateByKid.set(kid, privateJwk);
+    return {
+      kid,
+      publicJwk: publicRecordFrom(kid, publicJwk).publicJwk,
+      privateJwk,
+    };
+  }
+
   if (activePublic) {
     assertPublicJwkOnly(activePublic.publicJwk);
     const cached = ephemeralPrivateByKid.get(activePublic.kid);
@@ -136,52 +183,7 @@ export async function ensureSigningKey(
         privateJwk: cached,
       };
     }
-    if (config.KYA_MODE === 'live') {
-      const privateJwk = await loadLivePrivateJwk(config);
-      const publicFromPrivate = sanitizePublicJwk({ ...privateJwk });
-      // kid from env key or existing record
-      const kid =
-        (privateJwk as JsonWebKey & { kid?: string }).kid ?? activePublic.kid;
-      ephemeralPrivateByKid.set(kid, privateJwk);
-      if (kid !== activePublic.kid || JSON.stringify(publicFromPrivate) !== JSON.stringify(sanitizePublicJwk({ ...activePublic.publicJwk }))) {
-        await repo.withLock(async (s) => {
-          for (const k of s.signingKeys) k.active = false;
-          s.signingKeys.push(publicRecordFrom(kid, publicFromPrivate));
-        });
-      }
-      return {
-        kid,
-        publicJwk: publicRecordFrom(kid, publicFromPrivate).publicJwk,
-        privateJwk,
-      };
-    }
     // Demo: public metadata persisted but private lost (e.g. process restart) — rotate.
-  }
-
-  if (config.KYA_MODE === 'live') {
-    const privateJwk = await loadLivePrivateJwk(config);
-    const kid =
-      (privateJwk as JsonWebKey & { kid?: string }).kid ??
-      `kya-${newId('kid').slice(0, 12)}`;
-    const publicJwk = sanitizePublicJwk({ ...privateJwk });
-    ephemeralPrivateByKid.set(kid, privateJwk);
-    await repo.withLock(async (s) => {
-      for (const k of s.signingKeys) k.active = false;
-      // Strip any legacy privateJwk if migrating old store files.
-      s.signingKeys = s.signingKeys.map((k) => {
-        const { privateJwk: _drop, ...rest } = k as SigningKeyPublicRecord & {
-          privateJwk?: unknown;
-        };
-        void _drop;
-        return rest as SigningKeyPublicRecord;
-      });
-      s.signingKeys.push(publicRecordFrom(kid, publicJwk));
-    });
-    return {
-      kid,
-      publicJwk: publicRecordFrom(kid, publicJwk).publicJwk,
-      privateJwk,
-    };
   }
 
   // Demo: generate ephemeral ES256 keypair; persist public only.

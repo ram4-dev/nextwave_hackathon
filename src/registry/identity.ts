@@ -44,6 +44,7 @@ export function createRegistryPublicClient(
   getCode: (args: { address: `0x${string}` }) => Promise<Hex | undefined>;
   readContract: (args: Record<string, unknown>) => Promise<unknown>;
   getBlockNumber: () => Promise<bigint>;
+  getContractEvents: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
   watchContractEvent: (args: Record<string, unknown>) => () => void;
 } {
   if (chainId === 84532) {

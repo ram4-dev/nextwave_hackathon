@@ -7,7 +7,8 @@ import { setCredentialStatus } from '../credentials/jws.js';
 
 type WatchClient = {
   getBlockNumber: () => Promise<bigint>;
-  watchContractEvent: (args: Record<string, unknown>) => () => void;
+  getContractEvents?: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  watchContractEvent?: (args: Record<string, unknown>) => () => void;
 };
 
 export interface RegisteredPayload {
@@ -304,7 +305,9 @@ function pendingKey(ev: PendingEvent): string {
 }
 
 /**
- * Start Registered/Transfer watchers via viem watchContractEvent.
+ * Start Registered/Transfer watchers via viem.
+ * HTTP/public RPCs can use stateless eth_getLogs polling to avoid provider-side
+ * filters that are lost behind load balancers (`filter not found`).
  * Pending queue + timer flush when confirmations > 1 so deferred logs are not dropped.
  */
 export async function startEventWatcher(
@@ -318,8 +321,17 @@ export async function startEventWatcher(
     onLogError?: (err: unknown) => void;
     /** Flush interval for pending confirmations (ms). */
     flushIntervalMs?: number;
+    /** Use block-range eth_getLogs polling instead of stateful RPC filters. */
+    statelessPolling?: boolean;
+    /** Poll interval for stateless event reads (ms). */
+    pollingIntervalMs?: number;
   },
-): Promise<{ stop: () => void; flush: () => Promise<void>; pendingCount: () => number }> {
+): Promise<{
+  stop: () => void;
+  flush: () => Promise<void>;
+  poll: () => Promise<void>;
+  pendingCount: () => number;
+}> {
   const registry = getAddress(opts.registry);
   const confirmations = opts.confirmations ?? 1;
   const onLogError =
@@ -330,7 +342,9 @@ export async function startEventWatcher(
 
   const pending = new Map<string, PendingEvent>();
   let timer: ReturnType<typeof setInterval> | undefined;
+  let pollingTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
+  let polling = false;
 
   const flush = async (): Promise<void> => {
     if (stopped) return;
@@ -392,84 +406,136 @@ export async function startEventWatcher(
     await flush();
   };
 
-  const unwatchRegistered = client.watchContractEvent({
-    address: registry,
-    abi: IDENTITY_REGISTRY_ABI as Abi,
-    eventName: 'Registered',
-    onLogs: async (
-      logs: Array<{
-        args?: { agentId?: bigint; agentURI?: string; owner?: `0x${string}` };
-        transactionHash?: `0x${string}`;
-        logIndex?: number;
-        blockNumber?: bigint;
-      }>,
-    ) => {
-      try {
-        for (const log of logs) {
-          const args = log.args ?? {};
-          if (args.agentId == null || !args.agentURI || !args.owner || !log.transactionHash) {
-            continue;
-          }
-          await enqueueOrApply({
-            kind: 'Registered',
-            chainId: opts.chainId,
-            registryAddress: registry,
-            publicBaseUrl: opts.publicBaseUrl,
-            payload: {
-              agentId: args.agentId.toString(),
-              agentURI: args.agentURI,
-              owner: getAddress(args.owner),
-              txHash: log.transactionHash,
-              logIndex: log.logIndex ?? 0,
-              blockNumber: log.blockNumber ?? 0n,
-            },
-          });
-        }
-      } catch (err) {
-        onLogError(err);
-      }
-    },
-    onError: onLogError,
-  });
+  type RegisteredLog = {
+    args?: { agentId?: bigint; agentURI?: string; owner?: `0x${string}` };
+    transactionHash?: `0x${string}`;
+    logIndex?: number;
+    blockNumber?: bigint;
+  };
+  type TransferLog = {
+    args?: { from?: `0x${string}`; to?: `0x${string}`; tokenId?: bigint };
+    transactionHash?: `0x${string}`;
+    logIndex?: number;
+    blockNumber?: bigint;
+  };
 
-  const unwatchTransfer = client.watchContractEvent({
-    address: registry,
-    abi: IDENTITY_REGISTRY_ABI as Abi,
-    eventName: 'Transfer',
-    onLogs: async (
-      logs: Array<{
-        args?: { from?: `0x${string}`; to?: `0x${string}`; tokenId?: bigint };
-        transactionHash?: `0x${string}`;
-        logIndex?: number;
-        blockNumber?: bigint;
-      }>,
-    ) => {
-      try {
-        for (const log of logs) {
-          const args = log.args ?? {};
-          if (!args.from || !args.to || args.tokenId == null || !log.transactionHash) {
-            continue;
-          }
-          await enqueueOrApply({
-            kind: 'Transfer',
-            chainId: opts.chainId,
-            registryAddress: registry,
-            payload: {
-              from: getAddress(args.from),
-              to: getAddress(args.to),
-              tokenId: args.tokenId.toString(),
-              txHash: log.transactionHash,
-              logIndex: log.logIndex ?? 0,
-              blockNumber: log.blockNumber ?? 0n,
-            },
-          });
-        }
-      } catch (err) {
-        onLogError(err);
+  const handleRegisteredLogs = async (logs: RegisteredLog[]): Promise<void> => {
+    for (const log of logs) {
+      const args = log.args ?? {};
+      if (args.agentId == null || !args.agentURI || !args.owner || !log.transactionHash) {
+        continue;
       }
-    },
-    onError: onLogError,
-  });
+      await enqueueOrApply({
+        kind: 'Registered',
+        chainId: opts.chainId,
+        registryAddress: registry,
+        publicBaseUrl: opts.publicBaseUrl,
+        payload: {
+          agentId: args.agentId.toString(),
+          agentURI: args.agentURI,
+          owner: getAddress(args.owner),
+          txHash: log.transactionHash,
+          logIndex: log.logIndex ?? 0,
+          blockNumber: log.blockNumber ?? 0n,
+        },
+      });
+    }
+  };
+
+  const handleTransferLogs = async (logs: TransferLog[]): Promise<void> => {
+    for (const log of logs) {
+      const args = log.args ?? {};
+      if (!args.from || !args.to || args.tokenId == null || !log.transactionHash) {
+        continue;
+      }
+      await enqueueOrApply({
+        kind: 'Transfer',
+        chainId: opts.chainId,
+        registryAddress: registry,
+        payload: {
+          from: getAddress(args.from),
+          to: getAddress(args.to),
+          tokenId: args.tokenId.toString(),
+          txHash: log.transactionHash,
+          logIndex: log.logIndex ?? 0,
+          blockNumber: log.blockNumber ?? 0n,
+        },
+      });
+    }
+  };
+
+  let unwatchRegistered: () => void = () => undefined;
+  let unwatchTransfer: () => void = () => undefined;
+  let poll = async (): Promise<void> => undefined;
+
+  if (opts.statelessPolling) {
+    if (!client.getContractEvents) {
+      throw new Error('Stateless event polling requires getContractEvents');
+    }
+    let lastPolledBlock = await client.getBlockNumber();
+    poll = async (): Promise<void> => {
+      if (stopped || polling) return;
+      polling = true;
+      try {
+        const currentBlock = await client.getBlockNumber();
+        if (currentBlock <= lastPolledBlock) return;
+        const logs = await client.getContractEvents!({
+          address: registry,
+          abi: IDENTITY_REGISTRY_ABI as Abi,
+          fromBlock: lastPolledBlock + 1n,
+          toBlock: currentBlock,
+          strict: true,
+        });
+        for (const log of logs) {
+          if (log.eventName === 'Registered') {
+            await handleRegisteredLogs([log as RegisteredLog]);
+          } else if (log.eventName === 'Transfer') {
+            await handleTransferLogs([log as TransferLog]);
+          }
+        }
+        lastPolledBlock = currentBlock;
+      } finally {
+        polling = false;
+      }
+    };
+    pollingTimer = setInterval(() => {
+      void poll().catch(onLogError);
+    }, opts.pollingIntervalMs ?? 4_000);
+    if (typeof pollingTimer === 'object' && 'unref' in pollingTimer) {
+      pollingTimer.unref();
+    }
+  } else {
+    if (!client.watchContractEvent) {
+      throw new Error('Event subscriptions require watchContractEvent');
+    }
+    unwatchRegistered = client.watchContractEvent({
+      address: registry,
+      abi: IDENTITY_REGISTRY_ABI as Abi,
+      eventName: 'Registered',
+      onLogs: async (logs: RegisteredLog[]) => {
+        try {
+          await handleRegisteredLogs(logs);
+        } catch (err) {
+          onLogError(err);
+        }
+      },
+      onError: onLogError,
+    });
+
+    unwatchTransfer = client.watchContractEvent({
+      address: registry,
+      abi: IDENTITY_REGISTRY_ABI as Abi,
+      eventName: 'Transfer',
+      onLogs: async (logs: TransferLog[]) => {
+        try {
+          await handleTransferLogs(logs);
+        } catch (err) {
+          onLogError(err);
+        }
+      },
+      onError: onLogError,
+    });
+  }
 
   const intervalMs = opts.flushIntervalMs ?? 12_000;
   timer = setInterval(() => {
@@ -481,11 +547,14 @@ export async function startEventWatcher(
 
   return {
     flush,
+    poll,
     pendingCount: () => pending.size,
     stop: () => {
       stopped = true;
       if (timer) clearInterval(timer);
+      if (pollingTimer) clearInterval(pollingTimer);
       timer = undefined;
+      pollingTimer = undefined;
       pending.clear();
       unwatchRegistered();
       unwatchTransfer();

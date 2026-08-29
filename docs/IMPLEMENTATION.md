@@ -82,11 +82,11 @@ Transfer of the ERC-721 Agent ID **suspends** binding until an active verified P
 
 1. Copy `.env.example` → `.env` (no placeholder secrets in code defaults).
 2. Set `KYA_MODE=live`.
-3. Set `BASE_SEPOLIA_RPC_URL` to a production Base RPC.
+3. Set `BASE_SEPOLIA_RPC_URL`. Local testing may use the official rate-limited `https://sepolia.base.org`; production must use a dedicated Base RPC.
 4. Set Didit `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID`, `DIDIT_WEBHOOK_SECRET`.
 5. Point Didit webhooks to `POST /v1/kyc/webhooks/didit`.
 6. Optionally enable `PAYMASTER_PROXY_ENABLED=true` and set server-only `PAYMASTER_URL` (browser receives capability URL only).
-7. Set `KYA_SIGNING_PRIVATE_JWK` or `KYA_SIGNING_KEY_FILE`.
+7. Set exactly one signing source: Vault-injected `KYA_SIGNING_PRIVATE_JWK`, or `KYA_SIGNING_KEY_FILE` pointing to a secret-mounted ES256 private JWK. Never commit the key.
 8. For Incode/Veriff, set their env vars and use `?provider=incode|veriff` (never `demo`).
 9. Mainnet: verify curated address, confirm `getVersion` + bytecode, then set `MAINNET_REGISTRY_VERIFIED=true` and `MAINNET_PROMOTION_ENABLED=true`.
 

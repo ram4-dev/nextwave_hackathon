@@ -27,6 +27,9 @@ export async function startLiveEventWatchers(
       registry: ready.registry,
       confirmations: 1,
       publicBaseUrl: config.PUBLIC_BASE_URL,
+      // Base's public HTTP RPC can create filters that another load-balanced
+      // backend cannot later resolve. Stateless block-range polling avoids that.
+      statelessPolling: true,
     });
     stops.push(watcher.stop);
     console.log(

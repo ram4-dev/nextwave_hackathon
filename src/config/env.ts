@@ -4,6 +4,7 @@ const emptyToUndefined = (v: unknown) =>
   typeof v === 'string' && v.trim() === '' ? undefined : v;
 
 const optionalSecret = z.preprocess(emptyToUndefined, z.string().min(1).optional());
+const optionalUrl = z.preprocess(emptyToUndefined, z.string().url().optional());
 
 const envSchema = z
   .object({
@@ -21,7 +22,7 @@ const envSchema = z
     PAYMASTER_CAPABILITY_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     KYC_TTL_DAYS: z.coerce.number().int().positive().default(365),
     BASE_SEPOLIA_RPC_URL: z.string().url().optional(),
-    BASE_MAINNET_RPC_URL: z.string().url().optional(),
+    BASE_MAINNET_RPC_URL: optionalUrl,
     PAYMASTER_PROXY_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
@@ -35,7 +36,7 @@ const envSchema = z
       .url()
       .default('https://verification.didit.me/v3'),
     INCODE_API_KEY: optionalSecret,
-    INCODE_API_URL: z.string().url().optional(),
+    INCODE_API_URL: optionalUrl,
     /** Admin/session token for X-Incode-Hardware-Id on Omni API calls (get/score). */
     INCODE_HARDWARE_ID: optionalSecret,
     /** Optional OAuth Bearer for Omni API when Hardware-Id is not used. */

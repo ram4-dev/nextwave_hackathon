@@ -7,12 +7,20 @@
  * - wallet_sendCalls WalletSendCallsParams (requires `from`)
  */
 import { createBaseAccountSDK } from '@base-org/account';
+import { createSiweMessage, parseSiweMessage } from 'viem/siwe';
+
+type BaseAccountProvider = {
+  request: (args: {
+    method: string;
+    params?: readonly unknown[] | Record<string, unknown>;
+  }) => Promise<unknown>;
+};
 
 export function createKyaBaseAccount(opts?: {
   appName?: string;
   appLogoUrl?: string;
   chainIds?: number[];
-}) {
+}): { getProvider: () => BaseAccountProvider } {
   return createBaseAccountSDK({
     appName: opts?.appName ?? 'KYA',
     appLogoUrl: opts?.appLogoUrl,
@@ -30,16 +38,53 @@ function isSiweCapabilityResponse(
   return typeof v.message === 'string' && typeof v.signature === 'string' && v.signature.startsWith('0x');
 }
 
-export async function siwbConnect(opts: {
+export type SiwbConnectOptions = {
   nonce: string;
   chainId: number;
   domain: string;
   uri: string;
   issuedAt?: string;
   expirationTime?: string;
-}): Promise<{ address: `0x${string}`; message: string; signature: `0x${string}` }> {
-  const sdk = createKyaBaseAccount({ chainIds: [opts.chainId] });
-  const provider = sdk.getProvider();
+};
+
+function matchesSiweRequest(
+  message: string,
+  address: `0x${string}`,
+  opts: SiwbConnectOptions,
+): boolean {
+  const parsed = parseSiweMessage(message);
+  return (
+    parsed.nonce === opts.nonce &&
+    parsed.chainId === opts.chainId &&
+    parsed.domain?.toLowerCase() === opts.domain.toLowerCase() &&
+    parsed.uri === opts.uri &&
+    parsed.address?.toLowerCase() === address.toLowerCase()
+  );
+}
+
+function canonicalSiweMessage(
+  address: `0x${string}`,
+  opts: SiwbConnectOptions,
+  issuedAt: string,
+  expirationTime: string,
+): string {
+  return createSiweMessage({
+    address,
+    chainId: opts.chainId,
+    domain: opts.domain,
+    uri: opts.uri,
+    version: '1',
+    nonce: opts.nonce,
+    statement: 'Sign in with Base to KYA.',
+    issuedAt: new Date(issuedAt),
+    expirationTime: new Date(expirationTime),
+  });
+}
+
+export async function siwbConnectWithProvider(
+  provider: BaseAccountProvider,
+  opts: SiwbConnectOptions,
+): Promise<{ address: `0x${string}`; message: string; signature: `0x${string}` }> {
   const chainHex = `0x${opts.chainId.toString(16)}`;
   const issuedAt = opts.issuedAt ?? new Date().toISOString();
   const expirationTime =
@@ -78,11 +123,33 @@ export async function siwbConnect(opts: {
   if (!isSiweCapabilityResponse(siwe)) {
     throw new Error('Missing or invalid signInWithEthereum capability in wallet_connect response');
   }
+  if (!matchesSiweRequest(siwe.message, account.address, opts)) {
+    const message = canonicalSiweMessage(account.address, opts, issuedAt, expirationTime);
+    const signature = await provider.request({
+      method: 'personal_sign',
+      params: [message, account.address],
+    });
+    if (typeof signature !== 'string' || !signature.startsWith('0x')) {
+      throw new Error('Missing or invalid personal_sign fallback signature');
+    }
+    return {
+      address: account.address,
+      message,
+      signature: signature as `0x${string}`,
+    };
+  }
   return {
     address: account.address,
     message: siwe.message,
     signature: siwe.signature,
   };
+}
+
+export async function siwbConnect(
+  opts: SiwbConnectOptions,
+): Promise<{ address: `0x${string}`; message: string; signature: `0x${string}` }> {
+  const sdk = createKyaBaseAccount({ chainIds: [opts.chainId] });
+  return siwbConnectWithProvider(sdk.getProvider(), opts);
 }
 
 export async function sendRegisterCalls(

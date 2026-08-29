@@ -42,6 +42,18 @@ function testConfig(overrides: Record<string, string> = {}) {
   });
 }
 
+describe('configuration parsing', () => {
+  it('treats blank optional URLs from .env files as unset', () => {
+    const config = testConfig({
+      BASE_MAINNET_RPC_URL: '',
+      INCODE_API_URL: '',
+    });
+
+    expect(config.BASE_MAINNET_RPC_URL).toBeUndefined();
+    expect(config.INCODE_API_URL).toBeUndefined();
+  });
+});
+
 describe('KYC normalization', () => {
   it('maps Didit statuses including Abandoned and Kyc Expired', () => {
     expect(mapStatus(DIDIT_STATUS_MAP as never, 'Approved')).toBe('verified');
@@ -985,6 +997,86 @@ describe('platform signing key persistence', () => {
     expect(store.signingKeys[0]).not.toHaveProperty('privateJwk');
     expect(store.signingKeys[0]?.publicJwk.d).toBeUndefined();
     expect(JSON.stringify(store)).not.toMatch(/"d"\s*:/);
+  });
+});
+
+describe('signing key identity and duplicate-kid recovery', () => {
+  it('derives a stable live kid from the public key without duplicate metadata on restart', async () => {
+    const { exportJWK, generateKeyPair } = await import('jose');
+    const { ensureSigningKey, resetEphemeralSigningKeysForTests } = await import(
+      '../src/credentials/signer.js'
+    );
+    const { privateKey } = await generateKeyPair('ES256', { extractable: true });
+    const privateJwk = await exportJWK(privateKey);
+    const config = testConfig({
+      KYA_MODE: 'live',
+      BASE_SEPOLIA_RPC_URL: 'https://sepolia.base.org',
+      DIDIT_API_KEY: 'k',
+      DIDIT_WORKFLOW_ID: 'w',
+      DIDIT_WEBHOOK_SECRET: 's',
+      KYA_SIGNING_PRIVATE_JWK: JSON.stringify(privateJwk),
+    });
+    const repo = new InMemoryRepository();
+
+    resetEphemeralSigningKeysForTests();
+    const first = await ensureSigningKey(repo, config);
+    resetEphemeralSigningKeysForTests();
+    const second = await ensureSigningKey(repo, config);
+    const store = await repo.getStore();
+
+    expect(first.kid).toBe(second.kid);
+    expect(first.kid).toMatch(/^kya-/);
+    expect(store.signingKeys).toHaveLength(1);
+    expect(store.signingKeys.filter((key) => key.active)).toHaveLength(1);
+  });
+
+  it('verifies a session against the matching public key when legacy records share a kid', async () => {
+    const { exportJWK, generateKeyPair, SignJWT } = await import('jose');
+    const { resetEphemeralSigningKeysForTests } = await import(
+      '../src/credentials/signer.js'
+    );
+    const { verifySessionToken } = await import('../src/auth/siwb.js');
+    const { getJwks } = await import('../src/credentials/jws.js');
+    const oldPair = await generateKeyPair('ES256', { extractable: true });
+    const currentPair = await generateKeyPair('ES256', { extractable: true });
+    const oldPublic = await exportJWK(oldPair.publicKey);
+    const currentPublic = await exportJWK(currentPair.publicKey);
+    const repo = new InMemoryRepository();
+    const kid = 'legacy-duplicate-kid';
+    await repo.withLock(async (store) => {
+      store.signingKeys.push(
+        {
+          kid,
+          publicJwk: oldPublic,
+          createdAt: '2026-08-28T00:00:00.000Z',
+          active: false,
+        },
+        {
+          kid,
+          publicJwk: currentPublic,
+          createdAt: '2026-08-29T00:00:00.000Z',
+          active: true,
+        },
+      );
+    });
+    const config = testConfig();
+    const address = '0x1111111111111111111111111111111111111111' as const;
+    const token = await new SignJWT({ sub: address, typ: 'kya_session' })
+      .setProtectedHeader({ alg: 'ES256', kid, typ: 'JWT' })
+      .setIssuer(config.KYA_ISSUER)
+      .setAudience('kya-session')
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(currentPair.privateKey);
+
+    resetEphemeralSigningKeysForTests();
+    await expect(verifySessionToken(repo, config, token)).resolves.toBe(address);
+    const jwks = await getJwks(repo);
+    expect(
+      jwks.keys.filter(
+        (key) => (key as JsonWebKey & { kid?: string }).kid === kid,
+      ),
+    ).toHaveLength(1);
   });
 });
 
@@ -1995,6 +2087,42 @@ describe('applyRegisteredEvent fail-closed', () => {
 });
 
 describe('watcher pending confirmations', () => {
+  it('uses stateless block-range polling without creating RPC filters', async () => {
+    let block = 100n;
+    const ranges: Array<{ fromBlock: bigint; toBlock: bigint }> = [];
+    let filterWatcherCreated = false;
+    const client = {
+      getBlockNumber: async () => block,
+      getContractEvents: async (args: Record<string, unknown>) => {
+        ranges.push({
+          fromBlock: args.fromBlock as bigint,
+          toBlock: args.toBlock as bigint,
+        });
+        return [];
+      },
+      watchContractEvent: () => {
+        filterWatcherCreated = true;
+        return () => undefined;
+      },
+    };
+
+    const { startEventWatcher } = await import('../src/registry/events.js');
+    const watcher = await startEventWatcher(client, new InMemoryRepository(), {
+      chainId: 84532,
+      registry: IDENTITY_REGISTRY_SEPOLIA,
+      statelessPolling: true,
+      pollingIntervalMs: 60_000,
+      flushIntervalMs: 60_000,
+    });
+
+    block = 102n;
+    await watcher.poll();
+
+    expect(filterWatcherCreated).toBe(false);
+    expect(ranges).toEqual([{ fromBlock: 101n, toBlock: 102n }]);
+    watcher.stop();
+  });
+
   it('queues log at block N with confirmations=2 and applies exactly once at N+1 via flush', async () => {
     const repo = new InMemoryRepository();
     const owner = '0x1111111111111111111111111111111111111111' as const;

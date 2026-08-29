@@ -39,8 +39,20 @@ export {
 
 export async function getJwks(repo: Repository): Promise<{ keys: JsonWebKey[] }> {
   const store = await repo.getStore();
+  const seenKids = new Set<string>();
+  const uniqueKeys = [...store.signingKeys]
+    .sort(
+      (a, b) =>
+        Number(b.active) - Number(a.active) ||
+        Date.parse(b.createdAt) - Date.parse(a.createdAt),
+    )
+    .filter((key) => {
+      if (seenKids.has(key.kid)) return false;
+      seenKids.add(key.kid);
+      return true;
+    });
   return {
-    keys: store.signingKeys.map((k) => {
+    keys: uniqueKeys.map((k) => {
       const pub = sanitizePublicJwk({ ...k.publicJwk }) as JsonWebKey & {
         kid?: string;
         use?: string;
@@ -141,33 +153,45 @@ export async function verifyKyaCredential(
 
   const store = await repo.getStore();
   const kid = header.kid;
-  const keyRecord =
-    store.signingKeys.find((k) => k.kid === kid) ??
-    store.signingKeys.find((k) => k.active);
-  if (!keyRecord) {
+  const keyRecords = store.signingKeys
+    .filter((key) => key.kid === kid)
+    .sort(
+      (a, b) =>
+        Number(b.active) - Number(a.active) ||
+        Date.parse(b.createdAt) - Date.parse(a.createdAt),
+    );
+  if (keyRecords.length === 0) {
     throw new DomainError('Unknown signing key', 'JWT_KID');
   }
-  assertPublicJwkOnly(keyRecord.publicJwk);
-
-  const publicKey = await importJWK(
-    sanitizePublicJwk({ ...keyRecord.publicJwk }),
-    'ES256',
-  );
-  let payload: jose.JWTPayload;
-  try {
-    const verified = await jose.jwtVerify(token, publicKey, {
-      issuer: config.KYA_ISSUER,
-      audience: opts?.expectAudience ?? config.KYA_AUDIENCE,
-      algorithms: ['ES256'],
-      clockTolerance: 5,
-    });
-    payload = verified.payload;
-  } catch (err) {
+  let verifiedPayload: jose.JWTPayload | undefined;
+  let lastError: unknown;
+  for (const keyRecord of keyRecords) {
+    assertPublicJwkOnly(keyRecord.publicJwk);
+    try {
+      const publicKey = await importJWK(
+        sanitizePublicJwk({ ...keyRecord.publicJwk }),
+        'ES256',
+      );
+      verifiedPayload = (
+        await jose.jwtVerify(token, publicKey, {
+          issuer: config.KYA_ISSUER,
+          audience: opts?.expectAudience ?? config.KYA_AUDIENCE,
+          algorithms: ['ES256'],
+          clockTolerance: 5,
+        })
+      ).payload;
+      break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (!verifiedPayload) {
     throw new DomainError(
-      `JWT verification failed: ${(err as Error).message}`,
+      `JWT verification failed: ${(lastError as Error | undefined)?.message ?? 'invalid signature'}`,
       'JWT_VERIFY',
     );
   }
+  const payload = verifiedPayload;
 
   const jti = String(payload.jti ?? '');
   const record = store.credentials.find((c) => c.jti === jti);

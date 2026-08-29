@@ -14,6 +14,7 @@ Retrieval date for all entries: **2026-08-29**. Marked **generated/demo** where 
 | Identity Registry `getVersion` (read-only live check 2026-08-29) | Sepolia `0x8004A818…BD9e`: proxy code **130 bytes**, `getVersion()` = **`2.0.0`**. Mainnet `0x8004A169…a432`: proxy code **130 bytes**, `getVersion()` = **`2.0.0`**. No chain writes performed. | `SUPPORTED_IDENTITY_REGISTRY_VERSION`; F5 exact-equality readiness gate |
 | Supported Identity Registry version | **`2.0.0`** (exact match required; non-empty alone fails closed) | `verifyRegistryReady`, `assertRegistryReadyForChain`, mainnet promotion |
 | Base Account overview | https://docs.base.org/sdks/base-account/overview | Live wallet / smart account model |
+| Base Sepolia network/RPC | https://docs.base.org/base-chain/quickstart/connecting-to-base | Chain ID `84532`; official public development RPC `https://sepolia.base.org` (rate-limited, not production) |
 | Authenticate users (SIWB) | https://docs.base.org/base-account/guides/authenticate-users | `auth/siwb.ts`, wizard SIWB flow |
 | `wallet_sendCalls` | https://docs.base.org/base-account/reference/core/provider-rpc-methods/wallet_sendCalls | `buildRegisterSendCalls` |
 | Paymaster capability (ERC-7677) | https://docs.base.org/base-account/reference/core/capabilities/paymasterService | Paymaster proxy + sendCalls capabilities |
