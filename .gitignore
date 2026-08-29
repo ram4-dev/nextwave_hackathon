@@ -1,0 +1,20 @@
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/
+
+# Dependencies & build
+node_modules/
+dist/
+web/dist/
+coverage/
+*.tsbuildinfo
+
+# Local KYA data & env
+.kya-data/
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+*.log
+

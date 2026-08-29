@@ -1,3 +1,90 @@
-# NextWave
+# KYA — Know Your Agent
 
-NextWave is a project for the Next Wave Hackathon. The product direction is still being defined.
+Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). Merchant, payments, and AP2 are out of scope.
+
+**Authoritative product scope:** [`FLOW.md`](./FLOW.md)
+
+## Status (honest)
+
+| Claim | Meaning |
+| --- | --- |
+| **Code-complete** | Path implemented with tests |
+| **Demo-verified** | `npm test` + `npm run demo:ceremony` pass on labeled demo path |
+| **Live-not-executed** | Live wiring exists; CI does **not** run real KYC, chain writes, or paymaster calls |
+
+Default `KYA_MODE=demo`. Live connectors stay disabled until env is configured.
+
+## What this MVP does (F0–F5)
+
+| Phase | Delivery | Status |
+| --- | --- | --- |
+| F0 | KYC adapters + SIWB (demo bypass labeled; live viem verify) | Code-complete + demo-verified; live-not-executed |
+| F1 | Device enrollment + fingerprint + Principal | Code-complete + demo-verified |
+| F2 | `wallet_sendCalls` encoding + capability-gated paymaster proxy | Code-complete; live-not-executed |
+| F3 | Event watchers + JWS + challenge (`ownerOf` fail-closed) | Code-complete + demo-verified; live watcher wired |
+| F4 | Rotation / transfer rebind + Incode/Veriff adapters | Code-complete + demo-verified |
+| F5 | Mainnet gate (flags + live code/`getVersion`) | Code-complete |
+
+## Quick start
+
+```bash
+npm install
+cp .env.example .env   # names only; keep KYA_MODE=demo
+npm run dev            # API on :8787
+npm run dev:web        # wizard on :5173 (proxies to API)
+```
+
+Open http://localhost:5173 and run the ceremony wizard, or:
+
+```bash
+npm run demo:ceremony
+```
+
+## Stack
+
+- TypeScript, Hono API, Vite + React wizard (`AgentKeyProvider` for CryptoKey handle)
+- `viem` (Base Sepolia/Mainnet), `@base-org/account` (live SIWB / sendCalls)
+- `jose` (ES256 JWS/JWT, RFC 7638 thumbprints)
+- File/JSON persistence for hackathon MVP
+- Vitest + ESLint
+
+## Security boundaries
+
+- KYC verifies **people only**; providers never see the agent.
+- `KYA_MODE=live` forbids demo KYC adapter, demo webhooks, and demo completion bypass.
+- One verified Principal may authorize **multiple** agents; re-KYC only if missing/expired.
+- Local private keys never leave the device; browser WebCrypto is **not** claimed as hardware proof.
+- `register(agentURI)` is submitted by the **user's Base Account** — KYA is never `msg.sender`.
+- Paymaster proxy requires a short-lived capability from authenticated `prepare-register`.
+- Enrollment detail requires session + owner auth; public `/v1/resolve` has no PII.
+- COOP: `same-origin-allow-popups` for Base Account popups.
+
+## Curated Identity Registry
+
+| Network | Chain ID | Address |
+| --- | --- | --- |
+| Base Sepolia | 84532 | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
+| Base Mainnet | 8453 | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` (promotion gate) |
+
+ABI: [`abis/IdentityRegistry.json`](./abis/IdentityRegistry.json) from [erc-8004/erc-8004-contracts](https://github.com/erc-8004/erc-8004-contracts).
+
+## Docs
+
+- [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) — architecture, status vocabulary, live config
+- [`docs/SOURCES.md`](./docs/SOURCES.md) — provenance for every external dependency
+- [`docs/SKILLS.md`](./docs/SKILLS.md) — skill search/install inventory (2026-08-29)
+- [`FLOW.md`](./FLOW.md) — product flow and acceptance checklist
+
+## Scripts
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run demo:ceremony
+```
+
+## License
+
+Private hackathon MVP.
