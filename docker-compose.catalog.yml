@@ -1,0 +1,19 @@
+services:
+  catalog-pg:
+    image: pgvector/pgvector:0.8.1-pg16
+    environment:
+      POSTGRES_USER: catalog
+      POSTGRES_PASSWORD: catalog
+      POSTGRES_DB: juno_catalog
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalog -d juno_catalog"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - catalog-pg-data:/var/lib/postgresql/data
+
+volumes:
+  catalog-pg-data:

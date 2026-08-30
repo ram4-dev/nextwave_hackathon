@@ -15,11 +15,14 @@ Hono API (:8787)
   ├─ KYC adapters (demo only when KYA_MODE=demo | didit | incode | veriff)
   ├─ agentURI host (ERC-8004 registration-v1, no PII)
   ├─ credential issue/verify + JWKS
-  └─ challenge-response (ownerOf fail-closed in live)
+  ├─ challenge-response (ownerOf fail-closed in live)
+  └─ public POST /v1/catalog/search (no auth/KYC; optional PostgreSQL catalog)
         │
         ▼
 Domain + JSON repository (.kya-data)
   Principal · Enrollment · Credential · Nonce · KYC session · Event cursor
+Catalog PostgreSQL/pgvector (separate from KyaStore)
+  versions · merchants · products · search projections + HNSW/GIN
         │
         ▼
 Base (live only)
@@ -46,6 +49,50 @@ Transfer of the ERC-721 Agent ID **suspends** binding until an active verified P
 | **Code-complete** | Implementation + unit/integration tests exist for the path |
 | **Demo-verified** | `npm test` + `npm run demo:ceremony` exercise the labeled demo path |
 | **Live-not-executed** | Live connectors are wired but **not** run with real KYC credentials or public-chain writes in CI |
+
+## Local Juno catalog workflow
+
+The catalog is a synthetic, offline Juno mock: 10 Spanish offers from Argentine
+merchants, priced in ARS. It is independent of `KyaStore`, has no real Juno
+API credentials, and exposes only public `POST /v1/catalog/search`; auth is
+intentionally deferred.
+
+Node.js 20+ is required (release evidence used Node 22 LTS). The server and
+loader must use the same `CATALOG_EMBEDDING_MODEL`; its default is the local
+384-d `Xenova/paraphrase-multilingual-MiniLM-L12-v2` provider. The first load
+may download that model, while subsequent query inference reads the local cache.
+
+```bash
+npm run catalog:up
+CATALOG_DATABASE_URL=postgres://catalog:catalog@127.0.0.1:55432/juno_catalog npm run catalog:migrate
+CATALOG_DATABASE_URL=postgres://catalog:catalog@127.0.0.1:55432/juno_catalog npm run catalog:load
+CATALOG_DATABASE_URL=postgres://catalog:catalog@127.0.0.1:55432/juno_catalog npm run dev
+curl -sS -X POST http://127.0.0.1:8787/v1/catalog/search \
+  -H 'content-type: application/json' \
+  --data '{"query":"papas fritas","top_k":5}'
+```
+
+The loader persists only the searchable projection (`item_id`, name,
+description, `item_info`, embedding); price, currency, availability and
+merchant data remain authoritative SQL rows and are bulk-hydrated after
+retrieval. pgvector HNSW is the primary path. Exact vector search is used only
+when the explicit HNSW readiness probe says the index is unavailable; query or
+database failures return a sanitized error and never silently fall back.
+
+## ACP merchant ingestion (implemented)
+
+Registered merchants maintain feeds through ACP Feeds/Products. A valid PATCH
+commits current price and stock, assigns per-item revisions, and enqueues
+searchable text to a durable outbox. `catalog:worker` claims that outbox with
+`FOR UPDATE SKIP LOCKED`, embeds locally, and upserts only if `search_revision`
+is still current. Public search hydrates SQL current-state rows and returns
+`data_revision`, `search_revision`, and `index_revision` without
+`catalog_version`. The Juno fixture is seed/test only. Pause routes or the
+worker with `CATALOG_ACP_ENABLED=false` / `CATALOG_WORKER_ENABLED=false`
+without dropping SQL. Optional `CATALOG_ACP_RATE_LIMIT` caps in-process ACP
+mutations per merchant. Manual key revoke/rotate: `catalog:revoke` and
+`catalog:rotate`. See
+[`ACP_MERCHANT_CATALOG_INGESTION.md`](./ACP_MERCHANT_CATALOG_INGESTION.md).
 
 ## F0–F5 matrix
 

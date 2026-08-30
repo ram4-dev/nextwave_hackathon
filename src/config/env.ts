@@ -62,6 +62,19 @@ const envSchema = z
     KYA_SIGNING_PRIVATE_JWK: optionalSecret,
     /** Live-only: filesystem path to ES256 private JWK JSON (secret-backed handle). */
     KYA_SIGNING_KEY_FILE: optionalSecret,
+    CATALOG_DATABASE_URL: optionalUrl,
+    CATALOG_EMBEDDING_MODEL: z.string().min(1).default('Xenova/paraphrase-multilingual-MiniLM-L12-v2'),
+    CATALOG_ACP_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+    CATALOG_WORKER_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+    CATALOG_WORKER_LEASE_SECONDS: z.coerce.number().int().positive().default(30),
+    CATALOG_WORKER_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+    CATALOG_ACP_RATE_LIMIT: z.coerce.number().int().positive().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.KYA_MODE === 'live') {
