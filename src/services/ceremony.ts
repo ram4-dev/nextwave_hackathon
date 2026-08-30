@@ -28,17 +28,13 @@ import { buildAgentUriDocument } from '../agent-uri/document.js';
 import {
   agentRegistryRef,
   assertRegistryReadyForChain,
-  buildRegisterSendCalls,
+  buildRegisterTransaction,
   demoRegisterResult,
   hashRegisterCall,
   readOwnerOf,
   resolveRegistryAddress,
 } from '../registry/identity.js';
 import { applyRegisteredEvent, applyTransferEvent } from '../registry/events.js';
-import {
-  capabilityProxyUrl,
-  issuePaymasterCapability,
-} from '../server/paymaster.js';
 
 export type OwnerOfReader = (args: {
   registry: `0x${string}`;
@@ -465,31 +461,17 @@ export class CeremonyService {
         agentURI,
         registry,
         chainId,
-        sendCalls: null,
+        register: null,
         demo,
-        paymasterCapabilityUrl: null,
       };
     }
 
     const callHash = hashRegisterCall({ chainId, registry, agentURI });
-    let paymasterUrl: string | undefined;
-    if (this.config.PAYMASTER_PROXY_ENABLED) {
-      const { rawToken } = await issuePaymasterCapability(this.repo, this.config, {
-        agentUuid,
-        chainId,
-        registry,
-        agentURI,
-        ownerAddress,
-      });
-      paymasterUrl = capabilityProxyUrl(this.config, rawToken);
-    }
-
-    const sendCalls = buildRegisterSendCalls({
+    const register = buildRegisterTransaction({
       chainId,
       registry,
       agentURI,
       from: ownerAddress,
-      paymasterUrl,
     });
 
     return {
@@ -497,11 +479,10 @@ export class CeremonyService {
       agentURI,
       registry,
       chainId,
-      sendCalls,
+      register,
       demo: null,
-      paymasterCapabilityUrl: paymasterUrl ?? null,
       callHash,
-      note: 'Submit sendCalls via user Base Account wallet_sendCalls. KYA is never msg.sender. Paymaster capability uses callData containment binding (not full AA execute decode); provider policy must allowlist the registry.',
+      note: 'Submit the exact register(agentURI) transaction with the authenticated browser wallet. KYA is never msg.sender.',
     };
   }
 

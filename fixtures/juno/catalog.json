@@ -1,0 +1,169 @@
+{
+  "source": "juno_mock",
+  "version": "juno-mock-2026-08-29-001",
+  "source_updated_at": "2026-08-29T21:00:00.000Z",
+  "merchants": [
+    {
+      "merchant_id": "merchant_centro",
+      "name": "Mercado Centro",
+      "slug": "mercado-centro",
+      "category": "supermercado",
+      "country_code": "AR",
+      "locality": "Buenos Aires",
+      "accepts_juno": true,
+      "source_updated_at": "2026-08-29T20:00:00.000Z"
+    },
+    {
+      "merchant_id": "merchant_palermo",
+      "name": "Rotisería Palermo",
+      "slug": "rotiseria-palermo",
+      "category": "comida-rapida",
+      "country_code": "AR",
+      "locality": "Buenos Aires",
+      "accepts_juno": true,
+      "source_updated_at": "2026-08-29T20:10:00.000Z"
+    },
+    {
+      "merchant_id": "merchant_norte",
+      "name": "Almacén Norte",
+      "slug": "almacen-norte",
+      "category": "almacen",
+      "country_code": "AR",
+      "locality": "Córdoba",
+      "accepts_juno": true,
+      "source_updated_at": "2026-08-29T20:20:00.000Z"
+    },
+    {
+      "merchant_id": "merchant_sur",
+      "name": "Kiosco Sur",
+      "slug": "kiosco-sur",
+      "category": "kiosco",
+      "country_code": "AR",
+      "locality": "Rosario",
+      "accepts_juno": true,
+      "source_updated_at": "2026-08-29T20:30:00.000Z"
+    }
+  ],
+  "offers": [
+    {
+      "item_id": "item_papas_clasicas",
+      "merchant_id": "merchant_centro",
+      "name": "Papas clásicas",
+      "description": "Hojuelas saladas listas para picar",
+      "category": "snacks",
+      "tags": ["snack", "salado"],
+      "price_minor": 4500,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:45:00.000Z"
+    },
+    {
+      "item_id": "item_bastones_crocantes",
+      "merchant_id": "merchant_palermo",
+      "name": "Bastones crocantes",
+      "description": "Corte fino estilo snack con sal marina",
+      "category": "comida-rapida",
+      "tags": ["acompañamiento", "snack"],
+      "price_minor": 3800,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:46:00.000Z"
+    },
+    {
+      "item_id": "item_hamburguesa_completa",
+      "merchant_id": "merchant_palermo",
+      "name": "Hamburguesa completa",
+      "description": "Medallón de carne con lechuga y tomate",
+      "category": "comida-rapida",
+      "tags": ["carne", "almuerzo"],
+      "price_minor": 8900,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:47:00.000Z"
+    },
+    {
+      "item_id": "item_empanadas_carne",
+      "merchant_id": "merchant_palermo",
+      "name": "Empanadas de carne",
+      "description": "Docena horneada de carne cortada a cuchillo",
+      "category": "comida-rapida",
+      "tags": ["empanadas", "horno"],
+      "price_minor": 7200,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:48:00.000Z"
+    },
+    {
+      "item_id": "item_cafe_grano",
+      "merchant_id": "merchant_norte",
+      "name": "Café en grano",
+      "description": "Tueste medio para cafetera de filtro",
+      "category": "almacen",
+      "tags": ["cafe", "desayuno"],
+      "price_minor": 12500,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:49:00.000Z"
+    },
+    {
+      "item_id": "item_yerba_mate",
+      "merchant_id": "merchant_norte",
+      "name": "Yerba mate tradicional",
+      "description": "Corte clásico con palo para mate de todos los días",
+      "category": "almacen",
+      "tags": ["yerba", "mate"],
+      "price_minor": 5600,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:50:00.000Z"
+    },
+    {
+      "item_id": "item_agua_mineral",
+      "merchant_id": "merchant_sur",
+      "name": "Agua mineral",
+      "description": "Botella sin gas de un litro y medio",
+      "category": "bebidas",
+      "tags": ["agua", "sin-gas"],
+      "price_minor": 1800,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:51:00.000Z"
+    },
+    {
+      "item_id": "item_alfajores",
+      "merchant_id": "merchant_sur",
+      "name": "Alfajores de chocolate",
+      "description": "Caja de seis unidades rellenas de dulce de leche",
+      "category": "kiosco",
+      "tags": ["alfajor", "dulce"],
+      "price_minor": 3200,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:52:00.000Z"
+    },
+    {
+      "item_id": "item_leche_entera",
+      "merchant_id": "merchant_centro",
+      "name": "Leche entera",
+      "description": "Sachet de un litro para el desayuno",
+      "category": "lacteos",
+      "tags": ["leche", "desayuno"],
+      "price_minor": 2100,
+      "currency": "ARS",
+      "availability": "in_stock",
+      "source_updated_at": "2026-08-29T20:53:00.000Z"
+    },
+    {
+      "item_id": "item_pan_lactal",
+      "merchant_id": "merchant_centro",
+      "name": "Pan lactal",
+      "description": "Pan de molde para tostadas",
+      "category": "panificados",
+      "tags": ["pan", "tostadas"],
+      "price_minor": 2400,
+      "currency": "ARS",
+      "availability": "out_of_stock",
+      "source_updated_at": "2026-08-29T20:54:00.000Z"
+    }
+  ]
+}

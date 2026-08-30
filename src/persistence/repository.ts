@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -7,7 +7,6 @@ import type {
   EventCursor,
   KyaCredentialRecord,
   KycSessionRecord,
-  PaymasterCapability,
   Principal,
   ProcessedEvent,
 } from '../domain/types.js';
@@ -20,7 +19,6 @@ export interface KyaStore {
   kycSessions: KycSessionRecord[];
   processedEvents: ProcessedEvent[];
   cursors: EventCursor[];
-  paymasterCapabilities: PaymasterCapability[];
   /** Public signing key metadata only — never private JWK material. */
   signingKeys: SigningKeyPublicRecord[];
 }
@@ -51,7 +49,6 @@ function emptyStore(): KyaStore {
     kycSessions: [],
     processedEvents: [],
     cursors: [],
-    paymasterCapabilities: [],
     signingKeys: [],
   };
 }
@@ -85,7 +82,17 @@ export class JsonFileRepository implements Repository {
   async getStore(): Promise<KyaStore> {
     try {
       const raw = await readFile(this.filePath, 'utf8');
-      const parsed = { ...emptyStore(), ...JSON.parse(raw) } as KyaStore;
+      const source = JSON.parse(raw) as Partial<KyaStore>;
+      const parsed: KyaStore = {
+        principals: source.principals ?? [],
+        enrollments: source.enrollments ?? [],
+        credentials: source.credentials ?? [],
+        nonces: source.nonces ?? [],
+        kycSessions: source.kycSessions ?? [],
+        processedEvents: source.processedEvents ?? [],
+        cursors: source.cursors ?? [],
+        signingKeys: source.signingKeys ?? [],
+      };
       for (const cursor of parsed.cursors) {
         if (typeof cursor.lastBlock === 'string') {
           cursor.lastBlock = BigInt(cursor.lastBlock);
@@ -162,10 +169,6 @@ export class InMemoryRepository implements Repository {
 
 export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`;
-}
-
-export function sha256Hex(input: string): string {
-  return createHash('sha256').update(input).digest('hex');
 }
 
 export function eventId(
