@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppConfig } from '../config/env.js';
 import type { Repository } from '../persistence/repository.js';
-import { createApp } from './app.js';
+import { createApp, type CreateAppDeps } from './app.js';
 import {
   createFailSafeClientKeyResolver,
   createMemoryRateLimiter,
@@ -15,7 +15,6 @@ export type ServerAppDeps = {
   clientKeyResolver?: ReturnType<typeof createFailSafeClientKeyResolver>;
 };
 
-type CreateAppDeps = NonNullable<Parameters<typeof createApp>[2]>;
 type BootstrapOwnedDeps =
   | 'persistenceReady'
   | 'publicRateLimiter'

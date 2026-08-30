@@ -51,7 +51,7 @@
 - [x] 6.6 Rate limits without legacy bypass; fail-safe key resolver; live requires durable limiter
 - [x] 6.7 Negative coverage + migrate dry-run units; OpenSpec TDD evidence table (honest)
 - [x] 6.8 Non-destructive migrations (no DROP/CASCADE) + static safety guard
-- [ ] 6.9 Remote Supabase E2E (BLOCKED: `SUPABASE_URL`, service-role/secret key, DDL deploy)
+- [ ] 6.9 Full remote browser ceremony (Supabase DDL/readiness complete; BLOCKED externally by CDP allowed-origin email OTP failure)
 
 ## Phase 7 — Final audit hardening (TDD)
 

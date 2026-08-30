@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "..",
+    "outDir": "dist",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "../src/providers/yuno/validate.ts",
+    "../src/providers/yuno/generated/mvp-operations.ts",
+    "../src/providers/yuno/generated/manifest.ts",
+    "../src/providers/yuno/generated/index.ts"
+  ],
+  "exclude": ["node_modules", "dist", "../src/providers/yuno/generated/openapi-types.ts"]
+}

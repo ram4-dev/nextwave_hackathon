@@ -1,14 +1,14 @@
 # Apply Progress: api-first-agent-onboarding
 
-Updated: 2026-08-30 (independent parent-review hardening — token classes, pairing authority, atomic challenge issuance)
+Updated: 2026-08-30 (integrated `origin/main` verification and direct-PR preparation)
 
 ## Delivery
 
 - `delivery_strategy`: exception-ok
 - `size`: exception (user-approved; no changed-line cap)
-- Implementation owner: this worktree only; no commit/push/PR by implementer
-- Apply status: **local hardening complete; remote E2E BLOCKED** (see gates)
-- Apply/verify are **not** fully complete while live Supabase gate remains pending
+- Direct PR to `main` explicitly authorized; issue creation explicitly waived by the user
+- Apply status: **hardening and Supabase DDL/readiness complete; browser CDP E2E BLOCKED** (see gates)
+- Apply/verify are **not** fully complete while the external CDP origin gate remains pending
 
 ## TDD Cycle Evidence
 
@@ -77,14 +77,16 @@ Updated: 2026-08-30 (independent parent-review hardening — token classes, pair
 | 2026-08-30 | Parent-review RED | Human protected typ generic; metadata inconsistencies accepted; legacy attach returned 200; invalid nonce reached `ownerOf`; split CAS burned nonce on token persistence failure |
 | 2026-08-30 | Parent-review focused GREEN | `npx vitest run tests/audit-remediation-extended.test.ts tests/api-first-agent.test.ts tests/api-first-hardening.test.ts tests/kya.test.ts tests/cdp-auth.test.ts tests/jwk-metadata-parity.test.ts` → **101/101** pass |
 | 2026-08-30 | Parent-review full verification | `npm test` → **208/208** pass (27 files, including PostgreSQL integration/concurrency); typecheck OK; lint OK; build OK (server + Vite, 1866 modules); demo ceremony OK; `git diff --check` clean; CodeGraph 106 files / 1,416 nodes / 5,188 edges, up to date |
+| 2026-08-30 | Remote Supabase deploy/readiness | Supabase CLI linked; additive KYA migrations applied; schema, CAS state, and rate RPC probes ready; live `/health` and `/ready` returned 200 without reading or printing local secret values |
+| 2026-08-30 | Integrated `origin/main` GREEN | `npm test` → **336/336** (43 files); focused merge/auth/payments → **39/39**; Yuno mock → **88/88**; mandate PostgreSQL → **2/2**; contracts → **8/8**; typecheck, lint, root build, Yuno typecheck/lint/build, demo ceremony, ACP harness, OpenAPI verify/generated-drift, and `git diff --check` all green |
 
 ## External E2E gates (non-secret names only)
 
 | Gate | Status | Needed capability name |
 | --- | --- | --- |
-| Supabase project URL | USER-REPORTED IN LOCAL `.env`; NOT READ/VERIFIED IN THIS APPLY | `SUPABASE_URL` |
-| Supabase service role / secret key | USER-REPORTED IN LOCAL `.env`; NOT READ/VERIFIED IN THIS APPLY | `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_SECRET_KEY` / `SUPABASE_SERVICE_ROLE` |
-| Authorized DDL deploy | IN PROGRESS | Supabase CLI authenticated and linked; applying additive migrations `20260830090000_create_kya_core.sql` + `20260830090100_kya_state_cas.sql` after dry-run validation |
+| Supabase DDL + readiness | COMPLETE via authenticated Supabase CLI session; values never read or printed | Additive migrations `20260830090000_create_kya_core.sql` + `20260830090100_kya_state_cas.sql`; live readiness 200 |
+| CDP browser email OTP | BLOCKED externally: browser reported `Unable to send the email code` on the local frontend origin | Add the exact local/deployed frontend origin to the CDP project's allowed origins, then rerun login → KYC → ERC-8004 |
+| Yuno live sandbox | LIVE-NOT-EXECUTED; repository intentionally ran in `providerEnv=mock` without loading `.env` | Explicit sandbox credentials/configuration through the approved secret boundary |
 
 ## Rollback boundary
 

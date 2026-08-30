@@ -4,13 +4,20 @@ import { createMiddleware } from 'hono/factory';
 import { serveStatic } from '@hono/node-server/serve-static';
 import type { AppConfig } from '../config/env.js';
 import { publicClientConfig } from '../config/env.js';
-import { DomainError } from '../domain/state-machine.js';
+import { registerPaymentRoutes } from '../api/payments/routes.js';
+import {
+  createPaymentRuntime,
+  type PaymentRuntime,
+  type PaymentRuntimeOptions,
+} from '../api/payments/runtime.js';
 import { AcpError } from '../catalog/acp-contract.js';
-import { isCatalog503 } from '../catalog/domain.js';
 import type { MerchantFeedAuthorizer } from '../catalog/acp-contract.js';
+import { isCatalog503 } from '../catalog/domain.js';
 import type { AcpIngestionService } from '../catalog/ingestion.js';
 import type { PostgresAcpIngestionService } from '../catalog/postgres-acp-store.js';
 import type { CatalogSearchService } from '../catalog/search.js';
+import { PaymentError } from '../domain/payments/helpers.js';
+import { DomainError } from '../domain/state-machine.js';
 import type { Repository } from '../persistence/repository.js';
 import { CeremonyService } from '../services/ceremony.js';
 import { createAcpCatalogRoutes } from './acp-catalog-routes.js';
@@ -21,6 +28,7 @@ import {
   createRequireAgentAuth,
   type AgentAuthVariables,
 } from '../auth/dpop.js';
+import type { CredentialClaims } from '../credentials/jws.js';
 import { getJwks, verifyKyaCredential } from '../credentials/jws.js';
 import {
   createMemoryRateLimiter,
@@ -33,24 +41,48 @@ import { readBoundedBody, readBoundedText } from './request-body.js';
 type Variables = {
   principalId: string;
   address: `0x${string}`;
+  agentClaims?: CredentialClaims;
 } & Partial<AgentAuthVariables>;
 
+export type CreateAppDeps = {
+  catalogSearch?: CatalogSearchService;
+  acpIngestion?: AcpIngestionService | PostgresAcpIngestionService;
+  acpAuthorizer?: MerchantFeedAuthorizer;
+  cdpVerifier?: CdpIdentityVerifier;
+  persistenceReady?: () => Promise<boolean>;
+  /** Optional injectable limiter. Default is in-process only — not multi-instance authority. */
+  publicRateLimiter?: RateLimiter;
+  clientKeyResolver?: ClientKeyResolver;
+} & PaymentRuntimeOptions & {
+  /** Pre-built payment runtime (e.g. from index.ts). */
+  payment?: PaymentRuntime | null;
+};
+
+function isPaymentRuntime(
+  value: CreateAppDeps | PaymentRuntime | null | undefined,
+): value is PaymentRuntime {
+  return Boolean(value && typeof value === 'object' && 'configured' in value && value.configured);
+}
+
+/**
+ * Create the root Hono app (KYA ceremony host + optional catalog + payments).
+ *
+ * Third argument accepts:
+ * - catalog/ACP deps object (origin/main)
+ * - PaymentRuntime / PaymentRuntimeOptions (demo_mock F6)
+ * - a combined CreateAppDeps bag
+ * - null / omitted (ceremony-only)
+ */
 export function createApp(
   repo: Repository,
   config: AppConfig,
-  deps: {
-    catalogSearch?: CatalogSearchService;
-    acpIngestion?: AcpIngestionService | PostgresAcpIngestionService;
-    acpAuthorizer?: MerchantFeedAuthorizer;
-    cdpVerifier?: CdpIdentityVerifier;
-    persistenceReady?: () => Promise<boolean>;
-    /** Optional injectable limiter. Default is in-process only — not multi-instance authority. */
-    publicRateLimiter?: RateLimiter;
-    clientKeyResolver?: ClientKeyResolver;
-  } = {},
+  depsOrPayment: CreateAppDeps | PaymentRuntime | null = {},
 ) {
   const app = new Hono<{ Variables: Variables }>();
   const ceremony = new CeremonyService(repo, config);
+  const deps: CreateAppDeps = isPaymentRuntime(depsOrPayment)
+    ? { payment: depsOrPayment }
+    : (depsOrPayment ?? {});
   const publicLimiter =
     deps.publicRateLimiter ?? createMemoryRateLimiter({ limit: 60, windowMs: 60_000 });
   const durableRequired =
@@ -90,6 +122,10 @@ export function createApp(
     await readBoundedBody(c.req.raw);
   };
 
+  const paymentRuntime: PaymentRuntime | null = isPaymentRuntime(deps.payment)
+    ? deps.payment
+    : createPaymentRuntime(config, deps);
+
   app.use(
     '*',
     cors({
@@ -100,6 +136,7 @@ export function createApp(
 
   app.use('*', async (c, next) => {
     await next();
+    c.res.headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     c.res.headers.set('X-Content-Type-Options', 'nosniff');
   });
 
@@ -107,6 +144,9 @@ export function createApp(
     if (err instanceof CdpIdentityError) {
       const status = err.code === 'CDP_UNAVAILABLE' ? 503 : 401;
       return c.json({ error: err.code === 'CDP_UNAVAILABLE' ? 'Authentication provider unavailable' : 'Authentication failed', code: err.code }, status);
+    }
+    if (err instanceof PaymentError) {
+      return c.json({ error: err.message, code: err.code }, err.httpStatus as 400);
     }
     if (err instanceof AcpError) {
       return c.json({ error: err.message, code: err.code }, err.httpStatus as 400);
@@ -609,6 +649,13 @@ export function createApp(
     });
   });
 
+  registerPaymentRoutes(app, {
+    repo,
+    config,
+    payment: paymentRuntime,
+    requireSession,
+  });
+
   app.use(
     '/app/*',
     serveStatic({
@@ -617,5 +664,5 @@ export function createApp(
     }),
   );
 
-  return { app, ceremony };
+  return { app, ceremony, payment: paymentRuntime };
 }

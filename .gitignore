@@ -6,10 +6,13 @@ node_modules/
 dist/
 web/dist/
 coverage/
+artifacts/
+cache/
 *.tsbuildinfo
 
 # Local KYA data & env
 .kya-data/
+.mandate-artifacts/
 .env
 .env.local
 .env.*.local
@@ -18,3 +21,5 @@ coverage/
 .DS_Store
 *.log
 
+__pycache__/
+*.pyc

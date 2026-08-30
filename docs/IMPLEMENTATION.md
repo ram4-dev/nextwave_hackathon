@@ -35,16 +35,32 @@ Hono API (:8787)
   ├─ challenge → ≤10m DPoP-bound access JWT (typ KYA-AGENT-ACCESS+JWT)
   ├─ requireAgentAuth + GET /v1/agent/me
   ├─ GET /health (liveness) · GET /ready (deps/schema)
-  └─ catalog search / ACP (unchanged Juno slice)
+  ├─ public /v1/resolve (no PII)
+  ├─ public POST /v1/catalog/search (no auth/KYC; optional PostgreSQL catalog)
+  └─ payments (F6) — provider-agnostic /v1 + /internal/webhooks/yuno
         │
         ▼
-Persistence: InMemory (tests) · JSON (local demo) · Supabase service-role (live shared)
+KYA persistence: InMemory (tests) · JSON (local demo) · Supabase service-role (live shared)
   Never silently fall back from Supabase to JSON
+Domain store
+  Principal · Enrollment · Credential · Nonce · KYC session · Event cursor
+Payments JSON store (.kya-data/payments-store.json; AES vault tokens)
+Catalog PostgreSQL/pgvector (separate from KyaStore)
+  versions · merchants · products · search projections + HNSW/GIN
+        │
+        ▼
+YunoHttpClient → YUNO_BASE_URL (independent yuno_mock or future live Yuno)
+        │
+        ▼
+Base (live only)
+  Identity Registry curated · CDP Smart Account UserOperation from the browser
+  watchContractEvent(Registered, Transfer): Sepolia; Mainnet only when promotion
+  is enabled, the registry is verified, and getVersion === 2.0.0
 ```
 
 ### Domain states
 
-**Enrollment:** `awaiting_device` → `awaiting_human` → (`awaiting_kyc`?) → `awaiting_fingerprint` → `awaiting_register` → `awaiting_onchain` → `bound` ⇄ `suspended` → `revoked`  
+**Enrollment:** `awaiting_device` → `awaiting_human` → (`awaiting_kyc`?) → `awaiting_fingerprint` → `awaiting_register` → `awaiting_onchain` → `bound` ⇄ `suspended` → `revoked`
 (`awaiting_fingerprint` → `bound` for key rotation / transfer rebind without minting a new Agent ID)
 
 **KYC (person):** `pending` · `verified` · `needs_review` · `rejected` · `expired`
@@ -160,8 +176,17 @@ mutations per merchant. Manual key revoke/rotate: `catalog:revoke` and
 Demo steps are labeled. Live mode uses CDP email OTP and one sponsored Base
 Sepolia Smart Account UserOperation, and never calls `confirm-demo`.
 
+## Platform payments (F0–F7)
+
+Provider-agnostic payment routes mount on the same root Hono app as KYA/catalog.
+Blank/unset `YUNO_BASE_URL` leaves ceremony and catalog up; payment routes return
+503. See [`PAYMENTS.md`](./PAYMENTS.md) and
+[`YUNO_API_MOCK_MIGRATION_SPEC.md`](./YUNO_API_MOCK_MIGRATION_SPEC.md).
+
 ## Related docs
 
 - [`FLOW.md`](../FLOW.md) — product source of truth
+- [`PAYMENTS.md`](./PAYMENTS.md) — F6 platform payments architecture
+- [`YUNO_API_MOCK_MIGRATION_SPEC.md`](./YUNO_API_MOCK_MIGRATION_SPEC.md) — F0–F7 migration
 - [`SOURCES.md`](./SOURCES.md) — external provenance
 - [`SKILLS.md`](./SKILLS.md) — skill search/install inventory (2026-08-29)
