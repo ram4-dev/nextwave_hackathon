@@ -1,66 +1,77 @@
-# yuno-mcp-mock — documentation
+# yuno-rest-mock
 
-A local MCP server that simulates `mcp.prod.y.uno`, Yuno's real remote
-server. It speaks the same protocol (MCP over StreamableHTTP) that
-`@yuno-payments/agent-toolkit` expects, so the real Yuno SDK can point at
-this mock (`url: http://localhost:3300/mcp`) instead of the real backend,
-without changing a single line on the client side.
+Independent **Yuno REST `/v1` mock process** for the NextWave payment stack.
 
-## Where to start
+This package is **not** a Yuno MCP server and **not** the platform public API.
+It speaks the pinned Yuno HTTP contract (root `contracts/yuno/` +
+`src/providers/yuno/`) so a future `YunoHttpClient` can target
+`YUNO_BASE_URL=http://127.0.0.1:8080`.
 
-- **[architecture.md](architecture.md)** — how the server is put together:
-  the protocol, the stateless mode, where the in-memory state lives, and how
-  entities relate to each other (`customer` → `checkout_session` →
-  `payment` → `transaction`, `merchant` → `catalog item`).
-- **[tools-reference.md](tools-reference.md)** — complete reference of the 17
-  tools the mock exposes: input, output, and error cases for each one.
-- **[scope-and-fidelity.md](scope-and-fidelity.md)** — how faithful each part
-  of the mock is to Yuno's real API (`docs.y.uno`), what was deliberately
-  left out, and which categories are entirely invented for this project.
+## Current phase: F5 — Post-pay (capture / cancel / refund)
+
+Built on F1–F4:
+
+- Capture / cancel / refund / cancel-or-refund routes match pinned paths
+  (refund uses `{id}`; siblings use `{payment_id}`)
+- Transaction history: create still returns `transactions` object; retrieve
+  returns a consistent history array; CAPTURE/CANCEL/REFUND appended
+- Cumulative `amount.captured` / `amount.refunded` with partial + total guards
+- Provider `X-Idempotency-Key` via `ProviderIdempotency` scoped by
+  operation + payment/transaction (+ account)
+- Signed CAPTURE / CANCEL / REFUND webhooks on the F4 delivery worker
+- `refund_failed` scenario (test/dev) declines without increasing refunded
+- Event rank guard allows SUCCEEDED → PARTIALLY_REFUNDED → REFUNDED
+
+**Not** in F5: platform `/v1` payment API, platform MCP, or root
+`POST /internal/webhooks/yuno` (F6).
 
 ## Quickstart
 
 ```bash
+cd yuno_mock
 npm install
-npm start                # starts the mock at http://localhost:3300/mcp
+npm start                 # http://127.0.0.1:8080
 ```
 
-End-to-end tests (each one spins up its own server instance on its own port
-and talks to it using the real `@yuno-payments/agent-toolkit` SDK, not a
-hand-rolled HTTP client):
+From repo root: `npm run yuno:mock:{start,typecheck,test,build,lint}`.
+
+Safe fixtures (see `.env.example`):
+
+```http
+public-api-key: yuno_public_test_key
+private-secret-key: yuno_private_test_key
+```
+
+### Post-pay (authorize → capture → refund)
 
 ```bash
-npm run smoke-test       # confirms the real SDK connects and lists tools
-npm run test:customers
-npm run test:checkout
-npm run test:payments
-npm run test:merchants
+# authorize (capture:false), then:
+curl -X POST http://127.0.0.1:8080/v1/payments/$PAY_ID/transactions/$TX_ID/capture \
+  -H 'public-api-key: yuno_public_test_key' \
+  -H 'private-secret-key: yuno_private_test_key' \
+  -H 'X-Idempotency-Key: capture-1' \
+  -H 'content-type: application/json' \
+  -d '{"merchant_reference":"cap-1","reason":"PRODUCT_CONFIRMED","amount":{"currency":"COP","value":400}}'
 ```
 
-## Project layout
+### 3DS / work controls (dev/test only; 404 in production)
+
+```bash
+curl -X PUT http://127.0.0.1:8080/test/scenarios/payments \
+  -H 'content-type: application/json' \
+  -d '{"scenario":"requires_3ds"}'
+curl -X POST http://127.0.0.1:8080/test/work/process
+```
+
+## Layout
 
 ```
 src/
-  server.js            # MCP + Express scaffolding, stateless per request
-  store.js             # all in-memory state (customers, checkout sessions,
-                        # payments+transactions, merchants+catalog)
-  mcp-result.js         # ok()/fail() helpers to build the CallToolResult
-  payment-methods.js    # country -> available payment methods table
-  tools/
-    customers.js         # `customers` category (4 tools)
-    checkout.js           # `checkout` category (2 tools)
-    payments.js            # `payments` category (9 tools)
-    merchants.js             # `merchants` category (2 tools, invented)
-scripts/
-  smoke-test.js          # confirms real SDK <-> mock connectivity
-  test-customers.js
-  test-checkout.js
-  test-payments.js
-  test-merchants.js
-docs/                   # this folder
+  routes/payments.ts            # create/get + F5 post-pay
+  services/post-pay.ts          # capture/cancel/refund/cancel-or-refund
+  services/payment-view.ts      # history + response shapes
+  services/webhook-delivery.ts  # emit CAPTURE/CANCEL/REFUND
+  domain/pin-gaps.ts            # F2–F5 documented pin gaps
+tests/
+  f1-base.test.ts … f5-postpay.test.ts
 ```
-
-State lives in memory (`src/store.js`) for as long as the Node process keeps
-running — there is no disk persistence. Every restart starts from scratch,
-except for the merchant directory, which always re-seeds identically
-(deterministic, not random) as soon as the module is imported.

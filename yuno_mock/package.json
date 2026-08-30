@@ -1,19 +1,36 @@
 {
-  "name": "yuno-mcp-mock",
+  "name": "yuno-rest-mock",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Independent Yuno REST /v1 mock process (F5: capture/cancel/refund on F1–F4)",
   "scripts": {
-    "start": "node src/server.js",
-    "smoke-test": "node scripts/smoke-test.js",
-    "test:customers": "node scripts/test-customers.js",
-    "test:checkout": "node scripts/test-checkout.js",
-    "test:payments": "node scripts/test-payments.js",
-    "test:merchants": "node scripts/test-merchants.js"
+    "start": "tsx src/start.ts",
+    "start:dist": "node dist/yuno_mock/src/start.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . --max-warnings 0"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@yuno-payments/agent-toolkit": "^0.1.2",
-    "zod": "^4.5.4"
+    "@hono/node-server": "^1.14.4",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "hono": "^4.8.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "@types/node": "^22.16.5",
+    "eslint": "^9.31.0",
+    "globals": "^16.3.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0",
+    "vitest": "^3.2.4"
   }
 }

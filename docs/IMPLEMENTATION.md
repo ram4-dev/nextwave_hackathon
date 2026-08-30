@@ -15,11 +15,16 @@ Hono API (:8787)
   ├─ public /v1/resolve (no PII)
   ├─ KYC (instant mock verification — no external provider)
   ├─ credential issue/verify + JWKS (real ES256 JWS, cnf.jkt-bound)
-  └─ challenge-response (real signature check over the local CryptoKey)
+  ├─ challenge-response (real signature check over the local CryptoKey)
+  └─ payments (F6) — provider-agnostic /v1 + /internal/webhooks/yuno
         │
         ▼
-Domain + JSON repository (.kya-data)
-  Principal · Enrollment · Credential · Nonce
+  YunoHttpClient → YUNO_BASE_URL (independent yuno_mock or future live Yuno)
+        │
+        ▼
+Domain + JSON repositories
+  KYA: .kya-data/store.json
+  Payments: .kya-data/payments-store.json (separate; AES vault tokens)
 ```
 
 No component in this build talks to a browser wallet, a KYC provider, or a blockchain RPC. `identityRegistrySepolia` is a display-only string echoed by `/v1/config`.
@@ -71,5 +76,7 @@ npm run demo:ceremony  # deterministic CLI ceremony, no HTTP server required
 ## Related docs
 
 - [`FLOW.md`](../FLOW.md) — target product design (not all implemented here)
+- [`PAYMENTS.md`](./PAYMENTS.md) — F6 platform payments architecture
+- [`YUNO_API_MOCK_MIGRATION_SPEC.md`](./YUNO_API_MOCK_MIGRATION_SPEC.md) — F0–F7 migration
 - [`SOURCES.md`](./SOURCES.md) — external provenance still relevant to this build
 - [`SKILLS.md`](./SKILLS.md) — skill search/install inventory (2026-08-29)

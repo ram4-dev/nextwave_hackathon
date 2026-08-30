@@ -64,10 +64,22 @@ async function runCeremony(
 }
 
 describe('configuration parsing', () => {
-  it('treats a blank optional YUNO_MOCK_URL as unset and coerces MANDATE_MAX_AMOUNT', () => {
-    const config = testConfig({ YUNO_MOCK_URL: '', MANDATE_MAX_AMOUNT: '250' });
-    expect(config.YUNO_MOCK_URL).toBeUndefined();
+  it('treats blank YUNO_BASE_URL as unset and coerces MANDATE_MAX_AMOUNT', () => {
+    const config = testConfig({ YUNO_BASE_URL: '', MANDATE_MAX_AMOUNT: '250' });
+    expect(config.YUNO_BASE_URL).toBeUndefined();
     expect(config.MANDATE_MAX_AMOUNT).toBe(250);
+    expect(config.paymentsConfigured).toBe(false);
+  });
+
+  it('accepts legacy YUNO_MOCK_URL as YUNO_BASE_URL alias', () => {
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      PUBLIC_BASE_URL: 'http://localhost:8787',
+      KYA_ISSUER: 'http://localhost:8787',
+      KYA_AUDIENCE: 'kya-agent',
+      YUNO_MOCK_URL: 'http://127.0.0.1:8080',
+    });
+    expect(config.YUNO_BASE_URL).toBe('http://127.0.0.1:8080');
   });
 });
 

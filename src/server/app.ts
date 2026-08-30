@@ -5,6 +5,14 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { getAddress } from 'viem';
 import type { AppConfig } from '../config/env.js';
 import { publicClientConfig } from '../config/env.js';
+import { registerPaymentRoutes } from '../api/payments/routes.js';
+import {
+  createPaymentRuntime,
+  type PaymentRuntime,
+  type PaymentRuntimeOptions,
+} from '../api/payments/runtime.js';
+import type { CredentialClaims } from '../credentials/jws.js';
+import { PaymentError } from '../domain/payments/helpers.js';
 import { DomainError } from '../domain/state-machine.js';
 import type { Repository } from '../persistence/repository.js';
 import { CeremonyService } from '../services/ceremony.js';
@@ -13,11 +21,26 @@ import { getJwks, verifyKyaCredential } from '../credentials/jws.js';
 
 type Variables = {
   address: `0x${string}`;
+  agentClaims?: CredentialClaims;
 };
 
-export function createApp(repo: Repository, config: AppConfig) {
+/**
+ * Create the root Hono app (KYA ceremony host).
+ * Optional third argument wires provider-agnostic payment routes when configured.
+ * Existing callers that pass only (repo, config) remain compatible.
+ */
+export function createApp(
+  repo: Repository,
+  config: AppConfig,
+  paymentOptions?: PaymentRuntimeOptions | PaymentRuntime | null,
+) {
   const app = new Hono<{ Variables: Variables }>();
   const ceremony = new CeremonyService(repo, config);
+
+  const paymentRuntime: PaymentRuntime | null =
+    paymentOptions && 'configured' in paymentOptions && paymentOptions.configured
+      ? paymentOptions
+      : createPaymentRuntime(config, (paymentOptions as PaymentRuntimeOptions | undefined) ?? {});
 
   app.use(
     '*',
@@ -34,6 +57,9 @@ export function createApp(repo: Repository, config: AppConfig) {
   });
 
   app.onError((err, c) => {
+    if (err instanceof PaymentError) {
+      return c.json({ error: err.message, code: err.code }, err.httpStatus as 400);
+    }
     if (err instanceof DomainError) {
       const status =
         err.code === 'UNAUTHORIZED'
@@ -236,6 +262,13 @@ export function createApp(repo: Repository, config: AppConfig) {
     });
   });
 
+  registerPaymentRoutes(app, {
+    repo,
+    config,
+    payment: paymentRuntime,
+    requireSession,
+  });
+
   app.use(
     '/app/*',
     serveStatic({
@@ -244,5 +277,5 @@ export function createApp(repo: Repository, config: AppConfig) {
     }),
   );
 
-  return { app, ceremony };
+  return { app, ceremony, payment: paymentRuntime };
 }

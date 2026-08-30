@@ -8,6 +8,8 @@ Local-agent authentication for buyer agents running on a user's PC. KYA binds a 
 
 This build is a **fully mocked demo** — every external effect (wallet sign-in, KYC verification, on-chain registration) is a labeled in-process stand-in. There is no live mode, no `KYA_MODE` flag, and no wiring to a real wallet, KYC provider, or chain in this codebase.
 
+**Payments (F6 + F7 readiness):** the root Hono app hosts a provider-agnostic platform payment API. An independent `yuno_mock` REST process implements the pinned Yuno OpenAPI snapshot. Agents use platform MCP tools that call only platform `/v1` over HTTP. F7 offline swap-readiness (`YUNO_PROVIDER_ENV`, fail-closed sandbox/production config, `npm run yuno:sandbox:readiness`) is implemented; a live Yuno sandbox contract run remains **LIVE-NOT-EXECUTED** (no user credentials supplied). See [`docs/PAYMENTS.md`](./docs/PAYMENTS.md), [`docs/YUNO_SANDBOX_READINESS.md`](./docs/YUNO_SANDBOX_READINESS.md), and [`docs/YUNO_API_MOCK_MIGRATION_SPEC.md`](./docs/YUNO_API_MOCK_MIGRATION_SPEC.md).
+
 | Claim | Meaning |
 | --- | --- |
 | **Mocked** | Implemented and exercised by `npm test` / `npm run demo:ceremony`; no real external effect |
@@ -83,6 +85,9 @@ The addresses below are the officially curated ERC-8004 Identity Registry contra
 ## Docs
 
 - [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) — architecture and status vocabulary for this mocked build
+- [`docs/PAYMENTS.md`](./docs/PAYMENTS.md) — F6 platform payments + F7 swap-readiness
+- [`docs/YUNO_SANDBOX_READINESS.md`](./docs/YUNO_SANDBOX_READINESS.md) — offline sandbox/production config gate
+- [`docs/YUNO_API_MOCK_MIGRATION_SPEC.md`](./docs/YUNO_API_MOCK_MIGRATION_SPEC.md) — migration phases F0–F7
 - [`docs/SOURCES.md`](./docs/SOURCES.md) — provenance for external references still in use
 - [`docs/SKILLS.md`](./docs/SKILLS.md) — skill search/install inventory (2026-08-29)
 - [`FLOW.md`](./FLOW.md) — target product flow and acceptance checklist (design reference; not all of it is implemented here)
@@ -95,6 +100,11 @@ npm run typecheck
 npm test
 npm run build
 npm run demo:ceremony
+npm run yuno:contract:verify
+npm run yuno:contract:check-generated
+npm run yuno:mock:start   # independent mock on :8080
+npm run yuno:mock:test
+npm run yuno:sandbox:readiness   # offline F7 config gate (never live)
 ```
 
 ## License
