@@ -1,5 +1,5 @@
 import * as jose from 'jose';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes } from 'node:crypto';
 
 export type KeystoreProviderKind = 'os_hardware' | 'encrypted_os_keystore';
 
@@ -70,17 +70,115 @@ export async function generateLocalAgentKey(): Promise<LocalAgentKey> {
   };
 }
 
+const PRIVATE_JWK_FIELDS = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'] as const;
+const B64URL_RE = /^[A-Za-z0-9_-]+$/;
+const P256_COORD_BYTES = 32;
+
+function encodeBase64Url(bytes: Uint8Array): string {
+  return Buffer.from(bytes)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function decodeBase64UrlExact(value: string, expectedBytes: number): Uint8Array {
+  if (!B64URL_RE.test(value) || value.includes('=')) {
+    throw new Error('Invalid base64url coordinates');
+  }
+  const padded = value + '='.repeat((4 - (value.length % 4)) % 4);
+  const buf = Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  if (buf.length !== expectedBytes) {
+    throw new Error(`P-256 coordinate must decode to exactly ${expectedBytes} bytes`);
+  }
+  const out = new Uint8Array(buf);
+  // Canonical: re-encode must match input exactly (rejects non-canonical padding bits).
+  if (encodeBase64Url(out) !== value) {
+    throw new Error('Non-canonical base64url coordinate encoding');
+  }
+  return out;
+}
+
+function assertPublicEs256Metadata(raw: Record<string, unknown>): void {
+  if (raw.alg !== undefined && raw.alg !== 'ES256') {
+    throw new Error('Public JWK alg must be ES256');
+  }
+  if (raw.use !== undefined && raw.use !== 'sig') {
+    throw new Error('Public JWK use must be sig');
+  }
+  if (raw.key_ops !== undefined) {
+    if (
+      !Array.isArray(raw.key_ops) ||
+      raw.key_ops.length !== 1 ||
+      raw.key_ops[0] !== 'verify'
+    ) {
+      throw new Error('Public JWK key_ops must be the unique verification-only set');
+    }
+  }
+  if (raw.ext !== undefined && raw.ext !== true) {
+    throw new Error('Public JWK ext must be true');
+  }
+  if (
+    raw.kid !== undefined &&
+    (typeof raw.kid !== 'string' || raw.kid.trim().length === 0)
+  ) {
+    throw new Error('Public JWK kid must be a non-empty string');
+  }
+}
+
 export function sanitizePublicJwk(jwk: JsonWebKey): JsonWebKey {
-  delete (jwk as Record<string, unknown>).d;
-  delete (jwk as Record<string, unknown>).p;
-  delete (jwk as Record<string, unknown>).q;
-  delete (jwk as Record<string, unknown>).dp;
-  delete (jwk as Record<string, unknown>).dq;
-  delete (jwk as Record<string, unknown>).qi;
+  for (const field of PRIVATE_JWK_FIELDS) {
+    delete (jwk as Record<string, unknown>)[field];
+  }
   jwk.kty = 'EC';
   jwk.crv = 'P-256';
   return jwk;
 }
+
+/** Strict public EC P-256 JWK validation before persistence. */
+export function assertPublicEcP256Jwk(jwk: JsonWebKey): JsonWebKey {
+  const raw = jwk as Record<string, unknown>;
+  for (const field of PRIVATE_JWK_FIELDS) {
+    if (raw[field] !== undefined) {
+      throw new Error(`Private JWK member rejected: ${field}`);
+    }
+  }
+  if (jwk.kty !== 'EC') throw new Error('Unsupported key type');
+  if (jwk.crv !== 'P-256') throw new Error('Unsupported curve');
+  if (typeof jwk.x !== 'string' || typeof jwk.y !== 'string') {
+    throw new Error('Missing P-256 coordinates');
+  }
+  decodeBase64UrlExact(jwk.x, P256_COORD_BYTES);
+  decodeBase64UrlExact(jwk.y, P256_COORD_BYTES);
+  const allowed = new Set(['kty', 'crv', 'x', 'y', 'kid', 'use', 'alg', 'ext', 'key_ops']);
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) {
+      throw new Error(`Incompatible JWK field rejected: ${key}`);
+    }
+  }
+  assertPublicEs256Metadata(raw);
+  const cleaned = sanitizePublicJwk({ ...jwk });
+  // Cryptographic curve-point validation — rejects (0,0) and off-curve points.
+  try {
+    createPublicKey({
+      key: { kty: 'EC', crv: 'P-256', x: cleaned.x, y: cleaned.y },
+      format: 'jwk',
+    });
+  } catch (err) {
+    throw new Error(
+      `Invalid P-256 public point: ${err instanceof Error ? err.message : 'rejected by crypto'}`,
+    );
+  }
+  return cleaned;
+}
+
+export function isPrivateJwkMemberPresent(jwk: unknown): boolean {
+  if (!jwk || typeof jwk !== 'object') return false;
+  const raw = jwk as Record<string, unknown>;
+  return PRIVATE_JWK_FIELDS.some((field) => raw[field] !== undefined);
+}
+
+export { PRIVATE_JWK_FIELDS };
 
 export async function thumbprintFromJwk(jwk: JsonWebKey): Promise<string> {
   const publicJwk = sanitizePublicJwk({ ...jwk });
@@ -106,23 +204,16 @@ export async function signChallenge(
     intent_hash: string;
   },
 ): Promise<string> {
-  const key = await jose.importJWK(
-    await webcrypto().subtle.exportKey('jwk', privateKey).catch(async () => {
-      // Non-extractable: use CryptoKey directly via SubtleCrypto sign
-      throw new NonExtractableSignError();
-    }),
-    'ES256',
-  ).catch(() => null);
-
-  if (key) {
-    return new jose.CompactSign(
-      new TextEncoder().encode(JSON.stringify(payload)),
-    )
+  try {
+    const jwk = await webcrypto().subtle.exportKey('jwk', privateKey);
+    const key = await jose.importJWK(jwk, 'ES256');
+    return new jose.CompactSign(new TextEncoder().encode(JSON.stringify(payload)))
       .setProtectedHeader({ alg: 'ES256', typ: 'KYA-CHALLENGE+JWT' })
       .sign(key);
+  } catch {
+    // Non-extractable path: raw ECDSA signature over canonical bytes.
   }
 
-  // Non-extractable path: raw ECDSA signature over canonical bytes, wrapped as JWS-like token.
   const bytes = new TextEncoder().encode(canonicalChallenge(payload));
   const sig = await webcrypto().subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
@@ -135,12 +226,6 @@ export async function signChallenge(
   const body = Buffer.from(bytes).toString('base64url');
   const signature = Buffer.from(sig).toString('base64url');
   return `${header}.${body}.${signature}`;
-}
-
-class NonExtractableSignError extends Error {
-  constructor() {
-    super('private key is non-extractable');
-  }
 }
 
 export function canonicalChallenge(payload: {

@@ -20,7 +20,8 @@ import {
   selectLiveWatcherChains,
 } from '../registry/identity.js';
 import { startEventWatcher } from '../registry/events.js';
-import { createApp } from './app.js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { createBootstrappedApp } from './bootstrap.js';
 
 export async function startLiveEventWatchers(
   config: AppConfig,
@@ -60,8 +61,38 @@ export async function startLiveEventWatchers(
 
 async function main() {
   const config = loadConfig();
-  const dataFile = path.resolve(config.KYA_DATA_DIR, 'store.json');
-  const repo = new JsonFileRepository(dataFile);
+  let repo: Repository;
+  let persistenceReady: (() => Promise<boolean>) | undefined;
+  let supabaseClient: SupabaseClient | undefined;
+
+  if (config.PERSISTENCE_BACKEND === 'supabase') {
+    const { createSupabaseServiceClient, checkSupabaseSchemaReady, SupabaseRepository } =
+      await import('../persistence/supabase-repository.js');
+    if (!config.SUPABASE_URL || !config.SUPABASE_SERVICE_ROLE_KEY) {
+      console.error('Supabase persistence required but SUPABASE_URL / service role key missing');
+      process.exit(1);
+    }
+    const client = createSupabaseServiceClient(config);
+    supabaseClient = client;
+    repo = new SupabaseRepository(client);
+    persistenceReady = () => checkSupabaseSchemaReady(client);
+    const ready = await persistenceReady();
+    if (!ready) {
+      console.error('Supabase schema not ready — refusing to start with JSON fallback');
+      process.exit(1);
+    }
+  } else if (config.PERSISTENCE_BACKEND === 'memory') {
+    const { InMemoryRepository } = await import('../persistence/repository.js');
+    repo = new InMemoryRepository();
+  } else {
+    if (config.KYA_MODE === 'live' && config.PERSISTENCE_BACKEND === 'json') {
+      console.error('Refuse start: KYA_MODE=live requires PERSISTENCE_BACKEND=supabase');
+      process.exit(1);
+    }
+    const dataFile = path.resolve(config.KYA_DATA_DIR, 'store.json');
+    repo = new JsonFileRepository(dataFile);
+  }
+
   await ensureSigningKey(repo, config);
 
   const paymentRepo = new FilePaymentRepository(
@@ -98,12 +129,17 @@ async function main() {
     catalogPool && config.CATALOG_ACP_ENABLED
       ? new PostgresAcpIngestionService(catalogPool, acpIngestionOptionsFromConfig(config))
       : undefined;
-
-  const { app } = createApp(repo, config, {
-    catalogSearch,
-    acpAuthorizer,
-    acpIngestion,
-    payment,
+  const { app } = createBootstrappedApp({
+    config,
+    repo,
+    supabaseClient,
+    persistenceReady,
+    appDeps: {
+      catalogSearch,
+      acpAuthorizer,
+      acpIngestion,
+      payment,
+    },
   });
 
   let stopAllWatchers: (() => void) | undefined;

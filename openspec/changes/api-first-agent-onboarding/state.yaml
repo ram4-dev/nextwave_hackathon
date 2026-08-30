@@ -1,0 +1,39 @@
+change: api-first-agent-onboarding
+artifact_store: openspec
+delivery_strategy: exception-ok
+size: exception
+status: apply_parent_review_hardening_complete_remote_e2e_blocked
+updated_on: 2026-08-30
+
+phases:
+  init: completed
+  explore: completed
+  propose: completed
+  spec: completed
+  design: completed
+  tasks: completed
+  apply: completed_local_parent_review_hardening
+  verify: completed_local_pending_remote_gates
+  archive: pending_parent
+
+artifacts:
+  exploration: openspec/changes/api-first-agent-onboarding/exploration.md
+  proposal: openspec/changes/api-first-agent-onboarding/proposal.md
+  design: openspec/changes/api-first-agent-onboarding/design.md
+  tasks: openspec/changes/api-first-agent-onboarding/tasks.md
+  apply_progress: openspec/changes/api-first-agent-onboarding/apply-progress.md
+  specs:
+    - openspec/changes/api-first-agent-onboarding/specs/human-api-auth/spec.md
+    - openspec/changes/api-first-agent-onboarding/specs/agent-api-auth/spec.md
+    - openspec/changes/api-first-agent-onboarding/specs/device-agent-pairing/spec.md
+    - openspec/changes/api-first-agent-onboarding/specs/kyc-lifecycle-api/spec.md
+    - openspec/specs/human-api-auth/spec.md
+    - openspec/specs/device-agent-pairing/spec.md
+    - openspec/specs/kyc-lifecycle-api/spec.md
+    - openspec/specs/erc8004-registration-api/spec.md
+    - openspec/specs/agent-api-auth/spec.md
+    - openspec/specs/public-verification-api/spec.md
+
+approval:
+  implementation_authorized: true
+  note: Local parent-review hardening verified (208 tests plus PostgreSQL concurrency, typecheck, lint, build, demo, and diff safety). Local .env credentials were not read or verified; apply/verify remain incomplete until authorized remote Supabase DDL/E2E completes. Parent owns VCS.

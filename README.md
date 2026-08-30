@@ -4,6 +4,8 @@ Local-agent authentication for buyer agents running on a user's PC. KYA binds a 
 
 **Authoritative product scope:** [`FLOW.md`](./FLOW.md)
 
+Human login is CDP email OTP. Local agents enroll via `POST /v1/device-enrollments`; the only human pairing authority is `POST /v1/device-enrollments/claim` with the hashed one-time `user_code`. Agents poll for a one-time identity credential, then authenticate to protected routes with a short-lived DPoP-bound access JWT (`GET /v1/agent/me`). Live persistence uses Supabase service-role migrations under `supabase/migrations/`.
+
 ## Status (honest)
 
 | Claim | Meaning |
@@ -25,9 +27,9 @@ Default `KYA_MODE=demo`. Live connectors stay disabled until env is configured.
 
 | Phase | Delivery | Status |
 | --- | --- | --- |
-| F0 | KYC adapters + browser wallet SIWE (demo bypass labeled; live viem verify) | Code-complete + demo-verified; live-not-executed |
+| F0 | KYC adapters + CDP email OTP and Principal session | Code-complete + demo-verified; live-not-executed |
 | F1 | Device enrollment + fingerprint + Principal | Code-complete + demo-verified |
-| F2 | Direct browser-wallet `register(agentURI)` with simulate-before-write | Code-complete; live-not-executed |
+| F2 | CDP Smart Account `register(agentURI)` UserOperation | Code-complete; live-not-executed |
 | F3 | Event watchers + JWS + challenge (`ownerOf` fail-closed) | Code-complete + demo-verified; live watcher wired |
 | F4 | Rotation / transfer rebind + Incode/Veriff adapters | Code-complete + demo-verified |
 | F5 | Mainnet gate (flags + live code/`getVersion`) | Code-complete |
@@ -108,7 +110,7 @@ npm run demo:ceremony
 ## Stack
 
 - TypeScript, Hono API, Vite + React wizard (`AgentKeyProvider` for CryptoKey handle)
-- `viem` (EIP-1193 browser wallet, SIWE, Base Sepolia/Mainnet reads)
+- CDP React/hooks/SDK (email OTP, Smart Account, UserOperation status) and `viem` (Base registry reads/watchers)
 - `jose` (ES256 JWS/JWT, RFC 7638 thumbprints)
 - File/JSON persistence for hackathon MVP identity state
 - PostgreSQL 16 + pgvector 0.8.1 (`pgvector/pgvector:0.8.1-pg16`; `pg`, plain SQL migrations, `docker-compose.catalog.yml`)
@@ -121,11 +123,13 @@ npm run demo:ceremony
 - `KYA_MODE=live` forbids demo KYC adapter, demo webhooks, and demo completion bypass.
 - One verified Principal may authorize **multiple** agents; re-KYC only if missing/expired.
 - Local private keys never leave the device; browser WebCrypto is **not** claimed as hardware proof.
-- `register(agentURI)` is simulated and submitted by the **authenticated browser wallet** — KYA is never `msg.sender`.
-- The same address signs SIWE, owns the verified Principal, submits the transaction, and must match `ownerOf` before credential issuance.
-- The user wallet needs Base Sepolia ETH for gas; the MVP does not sponsor transactions.
+- `register(agentURI)` is submitted only by the authenticated CDP Smart Account; KYA is never `msg.sender`.
+- The bound Smart Account owns the verified Principal, must match `ownerOf`, and its completed UserOperation/receipt/event evidence is required before credential issuance.
+- Gas sponsorship is controlled by CDP Portal policy with `useCdpPaymaster: true`; no paymaster URL is exposed to Vite.
 - Enrollment detail requires session + owner auth; public `/v1/resolve` has no PII.
-- `accountsChanged`, `chainChanged`, and `disconnect` invalidate sensitive live steps.
+- No `agentUuid`-only attach route exists; pairing must consume the one-time human code.
+- Human sessions use protected `typ=KYA-HUMAN-SESSION+JWT`, distinct from credential and agent-access verifiers.
+- CDP authentication/session expiry invalidates sensitive live steps; there is no injected-wallet event fallback.
 - The Juno mock uses synthetic catalog data and no real provider credential.
 - Agent identity and Principal data are not embedded in the catalog index.
 
@@ -147,7 +151,7 @@ ABI: [`abis/IdentityRegistry.json`](./abis/IdentityRegistry.json) from [erc-8004
 - [`docs/YUNO_F0_CONTRACT_SPEC.md`](./docs/YUNO_F0_CONTRACT_SPEC.md) — pinned OpenAPI contract
 - [`docs/SOURCES.md`](./docs/SOURCES.md) — provenance for every external dependency
 - [`docs/SKILLS.md`](./docs/SKILLS.md) — skill search/install inventory (2026-08-29)
-- [`docs/BROWSER_WALLET_MIGRATION_SPEC.md`](./docs/BROWSER_WALLET_MIGRATION_SPEC.md) — accepted and implemented wallet migration
+- [`docs/BROWSER_WALLET_MIGRATION_SPEC.md`](./docs/BROWSER_WALLET_MIGRATION_SPEC.md) — historical SIWE/browser-wallet migration record
 - [`docs/JUNO_CATALOG_SEARCH_SPEC.md`](./docs/JUNO_CATALOG_SEARCH_SPEC.md) — PostgreSQL schema, indexes, offline loader, and public search contract
 - [`docs/ACP_MERCHANT_CATALOG_INGESTION.md`](./docs/ACP_MERCHANT_CATALOG_INGESTION.md) — merchant-owned ACP ingestion, outbox worker, and current-state search
 - [`FLOW.md`](./FLOW.md) — product flow and acceptance checklist

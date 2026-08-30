@@ -10,7 +10,7 @@ import { MemoryPaymentRepository } from '../src/persistence/payments/memory.js';
 import { CeremonyService } from '../src/services/ceremony.js';
 import { ensureSigningKey } from '../src/credentials/jws.js';
 import { DemoKycAdapter } from '../src/kyc/demo.js';
-import { issueSessionToken } from '../src/auth/session.js';
+import { issueHumanSession } from '../src/auth/session.js';
 import {
   createPaymentToolAdapter,
   PlatformRestClient,
@@ -113,8 +113,8 @@ describe('F6 platform payments E2E', () => {
     };
 
     // Human session (demo login path) — enrolls methods only; not agent spend.
-    await ceremony.findOrCreatePrincipal(OWNER);
-    const sessionToken = await issueSessionToken(kyaRepo, platformConfig, OWNER);
+    const human = await ceremony.findOrCreatePrincipal(OWNER);
+    const sessionToken = await issueHumanSession(kyaRepo, platformConfig, human);
     const bound = await runCeremony(ceremony, OWNER);
 
     const buyerClient = new PlatformRestClient({
@@ -427,8 +427,8 @@ describe('F6 platform payments E2E', () => {
       fetchImpl: mockFetch,
     });
 
-    await ceremony.findOrCreatePrincipal(OWNER);
-    const sessionToken = await issueSessionToken(kyaRepo, platformConfig, OWNER);
+    const human = await ceremony.findOrCreatePrincipal(OWNER);
+    const sessionToken = await issueHumanSession(kyaRepo, platformConfig, human);
     const bound = await runCeremony(ceremony, OWNER);
 
     const platformFetch: typeof fetch = async (input, init) => {

@@ -14,7 +14,7 @@ import { InMemoryRepository } from '../src/persistence/repository.js';
 import { MemoryPaymentRepository } from '../src/persistence/payments/memory.js';
 import type { PaymentRepository } from '../src/persistence/payments/types.js';
 import { ensureSigningKey } from '../src/credentials/jws.js';
-import { issueSessionToken } from '../src/auth/session.js';
+import { issueHumanSession } from '../src/auth/session.js';
 import { CeremonyService } from '../src/services/ceremony.js';
 import { DemoKycAdapter } from '../src/kyc/demo.js';
 import type { AuthorizationVerifier } from '../src/domain/authorization/verifier.js';
@@ -308,7 +308,7 @@ async function startHarness(opts?: {
   await waitForHttpOk(`${platformListen.baseUrl}/health`, 'platform');
 
   const principal = await ceremony.findOrCreatePrincipal(OWNER);
-  const sessionToken = await issueSessionToken(kyaRepo, platformConfig, OWNER);
+  const sessionToken = await issueHumanSession(kyaRepo, platformConfig, principal);
   const bound = await runCeremony(ceremony, OWNER);
 
   const buyerClient = new PlatformRestClient({

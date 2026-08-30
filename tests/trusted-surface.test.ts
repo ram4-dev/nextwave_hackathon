@@ -32,7 +32,7 @@ async function subject(overrides: {
   const repo = new InMemoryRepository();
   await repo.withLock((store) => {
     store.principals.push({ id: 'principal_1', ownerAddress: account.address, kycStatus: 'verified', kycExpiresAt: '2031-01-01T00:00:00.000Z', createdAt: now.toISOString(), updatedAt: now.toISOString() });
-    store.enrollments.push({ agentUuid: 'agent_1', deviceCode: 'device_1', principalId: 'principal_1', status: 'bound', publicJwk: jwk, thumbprint, keystoreProvider: 'os_hardware', agentUriPath: '/agents/agent_1', createdAt: now.toISOString(), updatedAt: now.toISOString() });
+    store.enrollments.push({ agentUuid: 'agent_1', deviceCodeHash: 'device_hash', userCodeHash: 'user_hash', pairingExpiresAt: '2031-01-01T00:00:00.000Z', pollIntervalSeconds: 5, principalId: 'principal_1', status: 'bound', publicJwk: jwk, thumbprint, keystoreProvider: 'os_hardware', agentUriPath: '/agents/agent_1', createdAt: now.toISOString(), updatedAt: now.toISOString() });
     store.credentials.push({ id: 'credential_1', agentUuid: 'agent_1', principalId: 'principal_1', thumbprint, agentRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e', agentId: '1', owner: account.address, status: 'active', statusRef: 'local', issuedAt: now.toISOString(), expiresAt: '2031-01-01T00:00:00.000Z', jti: 'jti_1' });
   });
   const registry = new InMemoryOpenMandateRegistry();

@@ -51,6 +51,11 @@ const envSchema = z
     NONCE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     KYC_TTL_DAYS: z.coerce.number().int().positive().default(365),
     BASE_SEPOLIA_RPC_URL: z.string().url().optional(),
+    /** Public browser identifier used only by CDP's client provider. */
+    VITE_CDP_PROJECT_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+    /** Server-only CDP credentials for access-token validation. */
+    CDP_API_KEY_ID: optionalSecret,
+    CDP_API_KEY_SECRET: optionalSecret,
     BASE_MAINNET_RPC_URL: optionalUrl,
     DIDIT_API_KEY: optionalSecret,
     DIDIT_WORKFLOW_ID: optionalSecret,
@@ -87,8 +92,8 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
-    SIWE_DOMAIN: z.string().default('localhost'),
-    SIWE_URI: z.string().url().default('http://localhost:5173'),
+    /** Browser origin for CORS and the navigation-only KYC return. */
+    FRONTEND_ORIGIN: z.string().url().default('http://localhost:5173'),
     /** Live-only: inline ES256 private JWK JSON (secret-backed). Never put demo defaults here. */
     KYA_SIGNING_PRIVATE_JWK: optionalSecret,
     /** Live-only: filesystem path to ES256 private JWK JSON (secret-backed handle). */
@@ -109,7 +114,18 @@ const envSchema = z
     CATALOG_WORKER_LEASE_SECONDS: z.coerce.number().int().positive().default(30),
     CATALOG_WORKER_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
     CATALOG_ACP_RATE_LIMIT: z.coerce.number().int().positive().optional(),
-
+    AGENT_API_AUDIENCE: z.string().min(1).default('kya-agent-api'),
+    PERSISTENCE_BACKEND: z.enum(['memory', 'json', 'supabase']).default('json'),
+    /** Preferred Supabase project URL (non-secret). */
+    SUPABASE_URL: optionalUrl,
+    /**
+     * Service-role / secret key for backend-only access.
+     * Aliases resolved in loadConfig: SUPABASE_SERVICE_ROLE_KEY,
+     * SUPABASE_SECRET_KEY, SUPABASE_SERVICE_ROLE.
+     */
+    SUPABASE_SERVICE_ROLE_KEY: optionalSecret,
+    /** Accepted for compatibility; backend does not use the anon key. */
+    SUPABASE_ANON_KEY: optionalSecret,
     /**
      * Mandate placeholder for a *separate* authorization-policy module.
      * Must NOT be read by PaymentService as payment authorization.
@@ -140,6 +156,27 @@ const envSchema = z
   })
   .superRefine((data, ctx) => {
     if (data.KYA_MODE === 'live') {
+      if (data.PERSISTENCE_BACKEND !== 'supabase') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['PERSISTENCE_BACKEND'],
+          message: 'KYA_MODE=live requires PERSISTENCE_BACKEND=supabase (fail-closed)',
+        });
+      }
+      if (!data.SUPABASE_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SUPABASE_URL'],
+          message: 'SUPABASE_URL required when KYA_MODE=live',
+        });
+      }
+      if (!data.SUPABASE_SERVICE_ROLE_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SUPABASE_SERVICE_ROLE_KEY'],
+          message: 'Service role key required when KYA_MODE=live',
+        });
+      }
       if (!data.BASE_SEPOLIA_RPC_URL) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -160,6 +197,22 @@ const envSchema = z
           path: ['KYA_SIGNING_PRIVATE_JWK'],
           message:
             'Live mode fail-closed: set KYA_SIGNING_PRIVATE_JWK or KYA_SIGNING_KEY_FILE (ES256 private JWK)',
+        });
+      }
+    }
+    if (data.PERSISTENCE_BACKEND === 'supabase') {
+      if (!data.SUPABASE_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SUPABASE_URL'],
+          message: 'SUPABASE_URL required when PERSISTENCE_BACKEND=supabase',
+        });
+      }
+      if (!data.SUPABASE_SERVICE_ROLE_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SUPABASE_SERVICE_ROLE_KEY'],
+          message: 'Service role key required when PERSISTENCE_BACKEND=supabase',
         });
       }
     }
@@ -188,6 +241,21 @@ export const IDENTITY_REGISTRY_SEPOLIA =
   '0x8004A818BFB912233c491871b3d84c89A494BD9e' as const;
 export const IDENTITY_REGISTRY_MAINNET =
   '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432' as const;
+
+function resolveSupabaseAliases(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next = { ...env };
+  if (!next.SUPABASE_URL && next.SUPABASE_PROJECT_URL) {
+    next.SUPABASE_URL = next.SUPABASE_PROJECT_URL;
+  }
+  if (!next.SUPABASE_SERVICE_ROLE_KEY) {
+    next.SUPABASE_SERVICE_ROLE_KEY =
+      next.SUPABASE_SECRET_KEY ?? next.SUPABASE_SERVICE_ROLE ?? undefined;
+  }
+  if (!next.SUPABASE_ANON_KEY && next.SUPABASE_ANON) {
+    next.SUPABASE_ANON_KEY = next.SUPABASE_ANON;
+  }
+  return next;
+}
 
 function formatReadinessFailure(env: NodeJS.ProcessEnv): string {
   const readiness = assessYunoProviderReadiness(env as Record<string, string | undefined>);
@@ -230,6 +298,10 @@ function sanitizeConfigParseError(err: unknown): Error {
     'VERIFF_API_SECRET',
     'VERIFF_WEBHOOK_SECRET',
     'KYA_SIGNING_PRIVATE_JWK',
+    'CDP_API_KEY_ID',
+    'CDP_API_KEY_SECRET',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'SUPABASE_ANON_KEY',
   ]);
   const paths = [
     ...new Set(
@@ -246,9 +318,10 @@ function sanitizeConfigParseError(err: unknown): Error {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const resolvedEnv = resolveSupabaseAliases(env);
   let parsed: z.infer<typeof envSchema>;
   try {
-    parsed = envSchema.parse(env);
+    parsed = envSchema.parse(resolvedEnv);
   } catch (err) {
     throw sanitizeConfigParseError(err);
   }
@@ -259,16 +332,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   // Live provider modes: assess before applying any defaults; never fixture-fallback.
   if (isLiveProvider) {
-    const readiness = assessYunoProviderReadiness(env as Record<string, string | undefined>);
+    const readiness = assessYunoProviderReadiness(
+      resolvedEnv as Record<string, string | undefined>,
+    );
     if (!readiness.ready) {
-      throw new Error(formatReadinessFailure(env));
+      throw new Error(formatReadinessFailure(resolvedEnv));
     }
   }
 
   // Backward-compat: accept legacy YUNO_MOCK_URL if YUNO_BASE_URL unset (mock only).
   let baseUrl = parsed.YUNO_BASE_URL;
-  if (!isLiveProvider && !baseUrl && env.YUNO_MOCK_URL?.trim()) {
-    const legacy = optionalUrl.safeParse(env.YUNO_MOCK_URL);
+  if (!isLiveProvider && !baseUrl && resolvedEnv.YUNO_MOCK_URL?.trim()) {
+    const legacy = optionalUrl.safeParse(resolvedEnv.YUNO_MOCK_URL);
     if (legacy.success) baseUrl = legacy.data;
   }
 
@@ -324,9 +399,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   // Live provider: readiness already required full material; refuse incomplete runtime.
   if (isLiveProvider && !paymentsConfigured) {
-    throw new Error(formatReadinessFailure(env));
+    throw new Error(formatReadinessFailure(resolvedEnv));
   }
-
   return {
     ...parsed,
     YUNO_PROVIDER_ENV: providerEnv,
@@ -356,14 +430,17 @@ export function publicClientConfig(config: AppConfig) {
     mode: config.KYA_MODE,
     issuer: config.KYA_ISSUER,
     audience: config.KYA_AUDIENCE,
+    agentApiAudience: config.AGENT_API_AUDIENCE,
     chainIdSepolia: config.chainIdSepolia,
     chainIdMainnet: config.chainIdMainnet,
     identityRegistrySepolia: config.identityRegistrySepolia,
     identityRegistryMainnet: config.identityRegistryMainnet,
     mainnetPromotionEnabled: config.MAINNET_PROMOTION_ENABLED,
     publicBaseUrl: config.PUBLIC_BASE_URL,
-    siweDomain: config.SIWE_DOMAIN,
-    siweUri: config.SIWE_URI,
+    frontendOrigin: config.FRONTEND_ORIGIN,
+    cdpProjectId: config.VITE_CDP_PROJECT_ID,
+    devicePollIntervalSeconds: 5,
+    persistenceBackend: config.PERSISTENCE_BACKEND,
     paymentsEnabled: config.paymentsConfigured,
     providerEnv: config.YUNO_PROVIDER_ENV,
     // Never expose server secrets to the browser.

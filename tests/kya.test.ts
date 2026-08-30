@@ -22,6 +22,7 @@ import { assertNoPiiInAgentUri, buildAgentUriDocument } from '../src/agent-uri/d
 import {
   encodeRegisterAgentUri,
   agentRegistryRef,
+  hashRegisterCall,
   IDENTITY_REGISTRY_SEPOLIA,
   buildRegisterTransaction,
   IDENTITY_REGISTRY_ABI,
@@ -32,12 +33,22 @@ import { decodeFunctionData } from 'viem';
 import { SignJWT, generateKeyPair } from 'jose';
 
 function testConfig(overrides: Record<string, string> = {}) {
+  const mode = overrides.KYA_MODE ?? 'demo';
+  const liveDefaults =
+    mode === 'live'
+      ? {
+          PERSISTENCE_BACKEND: 'supabase',
+          SUPABASE_URL: 'https://example.supabase.co',
+          SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-not-real',
+        }
+      : {};
   return loadConfig({
     NODE_ENV: 'test',
     KYA_MODE: 'demo',
     PUBLIC_BASE_URL: 'http://localhost:8787',
     KYA_ISSUER: 'http://localhost:8787',
     KYA_AUDIENCE: 'kya-agent',
+    ...liveDefaults,
     ...overrides,
   });
 }
@@ -790,13 +801,18 @@ describe('event idempotency', () => {
       });
       s.enrollments.push({
         agentUuid: 'agent_x',
-        deviceCode: 'ABCD',
+        deviceCodeHash: 'hash-ABCD', userCodeHash: 'uhash-ABCD', pairingExpiresAt: new Date(Date.now()+600000).toISOString(), pollIntervalSeconds: 5,
         principalId: 'prin_x',
         status: 'awaiting_onchain',
         publicJwk: { kty: 'EC', crv: 'P-256', x: 'a', y: 'b' },
         thumbprint: 't',
         keystoreProvider: 'os_hardware',
         agentUriPath: '/v1/agents/agent_x/agent-uri.json',
+        registrationIntentHash: hashRegisterCall({ chainId: 84532, registry: IDENTITY_REGISTRY_SEPOLIA, agentURI: payload.agentURI }),
+        registrationUserOpHash: ('0x' + 'aa'.repeat(32)) as `0x${string}`,
+        registrationTransactionHash: payload.txHash,
+        registrationReceiptConfirmedAt: new Date().toISOString(),
+        agentRegistry: agentRegistryRef(84532, IDENTITY_REGISTRY_SEPOLIA),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -804,10 +820,16 @@ describe('event idempotency', () => {
     const a = await applyRegisteredEvent(repo, 84532, payload, {
       currentBlock: 12n,
       confirmations: 1,
+      registryAddress: IDENTITY_REGISTRY_SEPOLIA,
+      publicBaseUrl: 'http://localhost',
+      verifiedOwner: payload.owner,
     });
     const b = await applyRegisteredEvent(repo, 84532, payload, {
       currentBlock: 12n,
       confirmations: 1,
+      registryAddress: IDENTITY_REGISTRY_SEPOLIA,
+      publicBaseUrl: 'http://localhost',
+      verifiedOwner: payload.owner,
     });
     expect(a.applied).toBe(true);
     expect(a.bound).toBe(true);
@@ -955,6 +977,9 @@ describe('platform signing key persistence', () => {
         PUBLIC_BASE_URL: 'http://localhost:8787',
         KYA_ISSUER: 'http://localhost:8787',
         KYA_AUDIENCE: 'kya-agent',
+        PERSISTENCE_BACKEND: 'supabase',
+        SUPABASE_URL: 'https://example.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-not-real',
         BASE_SEPOLIA_RPC_URL: 'https://sepolia.base.org',
         DIDIT_API_KEY: 'k',
         DIDIT_WORKFLOW_ID: 'w',
@@ -985,6 +1010,9 @@ describe('platform signing key persistence', () => {
       PUBLIC_BASE_URL: 'http://localhost:8787',
       KYA_ISSUER: 'http://localhost:8787',
       KYA_AUDIENCE: 'kya-agent',
+      PERSISTENCE_BACKEND: 'supabase',
+      SUPABASE_URL: 'https://example.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-not-real',
       BASE_SEPOLIA_RPC_URL: 'https://sepolia.base.org',
       DIDIT_API_KEY: 'k',
       DIDIT_WORKFLOW_ID: 'w',
@@ -1033,12 +1061,12 @@ describe('signing key identity and duplicate-kid recovery', () => {
     expect(store.signingKeys.filter((key) => key.active)).toHaveLength(1);
   });
 
-  it('verifies a session against the matching public key when legacy records share a kid', async () => {
+  it('verifies a Principal-bound session against the matching public key when legacy records share a kid', async () => {
     const { exportJWK, generateKeyPair, SignJWT } = await import('jose');
     const { resetEphemeralSigningKeysForTests } = await import(
       '../src/credentials/signer.js'
     );
-    const { verifySessionToken } = await import('../src/auth/siwe.js');
+    const { HUMAN_SESSION_TYP, verifyHumanSession } = await import('../src/auth/session.js');
     const { getJwks } = await import('../src/credentials/jws.js');
     const oldPair = await generateKeyPair('ES256', { extractable: true });
     const currentPair = await generateKeyPair('ES256', { extractable: true });
@@ -1064,16 +1092,19 @@ describe('signing key identity and duplicate-kid recovery', () => {
     });
     const config = testConfig();
     const address = '0x1111111111111111111111111111111111111111' as const;
-    const token = await new SignJWT({ sub: address, typ: 'kya_session' })
-      .setProtectedHeader({ alg: 'ES256', kid, typ: 'JWT' })
+    const principalId = 'prin_duplicate_kid';
+    await repo.withLock((store) => store.principals.push({ id: principalId, ownerAddress: address, kycStatus: 'pending', createdAt: '', updatedAt: '' }));
+    const token = await new SignJWT({ wallet: address, typ: 'kya_session' })
+      .setProtectedHeader({ alg: 'ES256', kid, typ: HUMAN_SESSION_TYP })
       .setIssuer(config.KYA_ISSUER)
-      .setAudience('kya-session')
+      .setAudience('kya-human-session')
+      .setSubject(principalId)
       .setIssuedAt()
       .setExpirationTime('5m')
       .sign(currentPair.privateKey);
 
     resetEphemeralSigningKeysForTests();
-    await expect(verifySessionToken(repo, config, token)).resolves.toBe(address);
+    await expect(verifyHumanSession(repo, config, token)).resolves.toEqual({ principalId, wallet: address });
     const jwks = await getJwks(repo);
     expect(
       jwks.keys.filter(
@@ -1083,296 +1114,98 @@ describe('signing key identity and duplicate-kid recovery', () => {
   });
 });
 
-describe('SIWE verification', () => {
-  function siweMessage(opts: {
-    domain: string;
-    address: string;
-    uri: string;
-    chainId: number;
-    nonce: string;
-    issuedAt?: string;
-    expirationTime?: string;
-    notBefore?: string;
-  }) {
-    let msg = `${opts.domain} wants you to sign in with your Ethereum account:
-${opts.address}
+describe('KYA human session binding', () => {
+  it('rejects a validly signed session after its Principal wallet binding changes', async () => {
+    const repo = new InMemoryRepository();
+    const config = testConfig();
+    const { issueHumanSession, verifyHumanSession } = await import('../src/auth/session.js');
+    const owner = '0x1111111111111111111111111111111111111111' as const;
+    const principal = await new CeremonyService(repo, config).findOrCreatePrincipal(owner);
+    const token = await issueHumanSession(repo, config, principal);
+    await expect(verifyHumanSession(repo, config, token)).resolves.toEqual({ principalId: principal.id, wallet: owner });
+    await repo.withLock((store) => { store.principals.find((item) => item.id === principal.id)!.ownerAddress = '0x2222222222222222222222222222222222222222'; });
+    await expect(verifyHumanSession(repo, config, token)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+});
 
-Sign in to KYA with your browser wallet.
-
-URI: ${opts.uri}
-Version: 1
-Chain ID: ${opts.chainId}
-Nonce: ${opts.nonce}
-Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
-    if (opts.expirationTime) msg += `\nExpiration Time: ${opts.expirationTime}`;
-    if (opts.notBefore) msg += `\nNot Before: ${opts.notBefore}`;
-    return msg;
-  }
-
-  it('rejects domain/URI mismatch without consuming nonce; consumes only after valid sig via verifySiweMessage', async () => {
+describe('KYC navigation callback', () => {
+  async function seedPendingKyc(overrides: Record<string, string> = {}) {
     const repo = new InMemoryRepository();
     const config = testConfig({
-      SIWE_DOMAIN: 'localhost',
-      SIWE_URI: 'http://localhost:5173',
+      FRONTEND_ORIGIN: 'http://localhost:5173',
+      ...overrides,
     });
-    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
-    const { nonce } = await issueSiweNonce(repo, 300);
-    const address = '0x1111111111111111111111111111111111111111' as const;
-    const now = new Date('2026-08-29T18:00:00.000Z');
+    const { createApp } = await import('../src/server/app.js');
+    const { app, ceremony } = createApp(repo, config);
+    const owner = '0x1111111111111111111111111111111111111111' as const;
+    await ceremony.findOrCreatePrincipal(owner);
+    const kyc = await ceremony.startKyc(owner);
+    return { repo, config, app, kyc };
+  }
 
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'evil.example',
-            address,
-            uri: 'http://localhost:5173',
-            chainId: 84532,
-            nonce,
-          }),
-          signature: '0xdead',
-        },
-        { time: now },
-      ),
-    ).rejects.toThrow(/domain/i);
-
-    expect(
-      (await repo.getStore()).nonces.find((n) => n.nonce === nonce)?.consumedAt,
-    ).toBeUndefined();
-
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'localhost',
-            address,
-            uri: 'http://evil.example/',
-            chainId: 84532,
-            nonce,
-          }),
-          signature: '0xdead',
-        },
-        { time: now },
-      ),
-    ).rejects.toThrow(/URI/i);
-
-    const message = siweMessage({
-      domain: 'localhost',
-      address,
-      uri: 'http://localhost:5173',
-      chainId: 84532,
-      nonce,
+  function decisionState(store: Awaited<ReturnType<InMemoryRepository['getStore']>>) {
+    return structuredClone({
+      kycSessions: store.kycSessions,
+      principals: store.principals,
+      enrollments: store.enrollments,
     });
+  }
 
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        { address, message, signature: '0xbad' },
-        {
-          time: now,
-          publicClient: { verifySiweMessage: async () => false },
-        },
-      ),
-    ).rejects.toThrow(/signature/i);
+  it('returns 303 to the configured frontend origin for a known session and leaves KYC state unchanged', async () => {
+    const { repo, config, app, kyc } = await seedPendingKyc();
+    const before = decisionState(await repo.getStore());
 
-    expect(
-      (await repo.getStore()).nonces.find((n) => n.nonce === nonce)?.consumedAt,
-    ).toBeUndefined();
-
-    const ok = await verifySiweLogin(
-      repo,
-      config,
-      { address, message, signature: '0xgood' },
-      {
-        time: now,
-        publicClient: { verifySiweMessage: async () => true },
-      },
+    const res = await app.request(
+      `/v1/kyc/callback?verificationSessionId=${encodeURIComponent(kyc.sessionId)}&status=Approved`,
     );
-    expect(ok.address).toBe(address.toLowerCase());
-    expect(
-      (await repo.getStore()).nonces.find((n) => n.nonce === nonce)?.consumedAt,
-    ).toBeTruthy();
 
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        { address, message, signature: '0xgood' },
-        {
-          time: now,
-          publicClient: { verifySiweMessage: async () => true },
-        },
-      ),
-    ).rejects.toThrow(/already used|replay/i);
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe(config.FRONTEND_ORIGIN);
+    expect(decisionState(await repo.getStore())).toEqual(before);
   });
 
-  it('rejects SIWE messages for every chain except Base Sepolia', async () => {
-    const repo = new InMemoryRepository();
-    const config = testConfig();
-    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
-    const { nonce } = await issueSiweNonce(repo, 300);
-    const address = '0x1111111111111111111111111111111111111111' as const;
+  it('rejects missing and unknown sessions without an open redirect', async () => {
+    const { repo, app } = await seedPendingKyc();
+    const before = decisionState(await repo.getStore());
 
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'localhost',
-            address,
-            uri: 'http://localhost:5173',
-            chainId: 8453,
-            nonce,
-          }),
-          signature: '0xgood',
-        },
-        {
-          time: new Date('2026-08-29T18:00:00.000Z'),
-          publicClient: { verifySiweMessage: async () => true },
-        },
-      ),
-    ).rejects.toThrow(/Base Sepolia|chain/i);
-    expect(
-      (await repo.getStore()).nonces.find((record) => record.nonce === nonce)?.consumedAt,
-    ).toBeUndefined();
+    const missing = await app.request('/v1/kyc/callback?status=Approved');
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('Location')).toBeNull();
+    const missingBody = (await missing.json()) as { code?: string };
+    expect(missingBody.code).toBe('NOT_FOUND');
+
+    const unknown = await app.request(
+      '/v1/kyc/callback?verificationSessionId=not-a-known-session',
+    );
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get('Location')).toBeNull();
+    const unknownBody = (await unknown.json()) as { code?: string };
+    expect(unknownBody.code).toBe('NOT_FOUND');
+
+    expect(decisionState(await repo.getStore())).toEqual(before);
   });
 
-  it('rejects stale/future issuedAt, notBefore, and expired presentation without burning nonce', async () => {
-    const repo = new InMemoryRepository();
-    const config = testConfig();
-    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
-    const address = '0x1111111111111111111111111111111111111111' as const;
-    const now = new Date('2026-08-29T18:00:00.000Z');
-    const client = { verifySiweMessage: async () => true };
+  it('ignores caller-supplied redirect targets', async () => {
+    const { repo, config, app, kyc } = await seedPendingKyc({
+      FRONTEND_ORIGIN: 'http://localhost:5173/app/',
+    });
+    const before = decisionState(await repo.getStore());
+    const injected = 'https://evil.example/phish';
+    const qs = new URLSearchParams({
+      verificationSessionId: kyc.sessionId,
+      status: 'Approved',
+      redirect: injected,
+      returnUrl: injected,
+      return: injected,
+      callback: injected,
+    });
 
-    const { nonce: n1 } = await issueSiweNonce(repo, 300);
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'localhost',
-            address,
-            uri: 'http://localhost:5173',
-            chainId: 84532,
-            nonce: n1,
-            issuedAt: '2026-08-29T17:00:00.000Z', // >300s stale
-          }),
-          signature: '0xgood',
-        },
-        { time: now, publicClient: client },
-      ),
-    ).rejects.toThrow(/stale|issuedAt/i);
-    expect(
-      (await repo.getStore()).nonces.find((n) => n.nonce === n1)?.consumedAt,
-    ).toBeUndefined();
+    const res = await app.request(`/v1/kyc/callback?${qs.toString()}`);
 
-    const { nonce: n2 } = await issueSiweNonce(repo, 300);
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'localhost',
-            address,
-            uri: 'http://localhost:5173',
-            chainId: 84532,
-            nonce: n2,
-            issuedAt: '2026-08-29T18:10:00.000Z', // future
-          }),
-          signature: '0xgood',
-        },
-        { time: now, publicClient: client },
-      ),
-    ).rejects.toThrow(/future|issuedAt/i);
-
-    const { nonce: n3 } = await issueSiweNonce(repo, 300);
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'localhost',
-            address,
-            uri: 'http://localhost:5173',
-            chainId: 84532,
-            nonce: n3,
-            notBefore: '2026-08-29T19:00:00.000Z',
-          }),
-          signature: '0xgood',
-        },
-        { time: now, publicClient: client },
-      ),
-    ).rejects.toThrow(/not yet valid|notBefore/i);
-
-    const { nonce: n4 } = await issueSiweNonce(repo, 300);
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'localhost',
-            address,
-            uri: 'http://localhost:5173',
-            chainId: 84532,
-            nonce: n4,
-            expirationTime: '2026-08-29T17:59:00.000Z',
-          }),
-          signature: '0xgood',
-        },
-        { time: now, publicClient: client },
-      ),
-    ).rejects.toThrow(/expired/i);
-    expect(
-      (await repo.getStore()).nonces.find((n) => n.nonce === n4)?.consumedAt,
-    ).toBeUndefined();
-  });
-
-  it('rejects address mismatch in message vs claimed address', async () => {
-    const repo = new InMemoryRepository();
-    const config = testConfig();
-    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
-    const { nonce } = await issueSiweNonce(repo, 300);
-    const address = '0x1111111111111111111111111111111111111111' as const;
-    const other = '0x2222222222222222222222222222222222222222';
-    await expect(
-      verifySiweLogin(
-        repo,
-        config,
-        {
-          address,
-          message: siweMessage({
-            domain: 'localhost',
-            address: other,
-            uri: 'http://localhost:5173',
-            chainId: 84532,
-            nonce,
-          }),
-          signature: '0xgood',
-        },
-        {
-          time: new Date('2026-08-29T18:00:00.000Z'),
-          publicClient: { verifySiweMessage: async () => true },
-        },
-      ),
-    ).rejects.toThrow(/address/i);
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe(config.FRONTEND_ORIGIN);
+    expect(res.headers.get('Location')).not.toContain('evil.example');
+    expect(decisionState(await repo.getStore())).toEqual(before);
   });
 });
 
@@ -1421,7 +1254,7 @@ describe('enrollment auth + public resolve', () => {
     const config = testConfig();
     const ceremony = new CeremonyService(repo, config);
     const { createApp } = await import('../src/server/app.js');
-    const { issueSessionToken } = await import('../src/auth/siwe.js');
+    const { issueHumanSession } = await import('../src/auth/session.js');
     const { app } = createApp(repo, config);
 
     const key = await crypto.subtle.generateKey(
@@ -1435,22 +1268,22 @@ describe('enrollment auth + public resolve', () => {
       keystoreProvider: 'encrypted_os_keystore',
     });
     const owner = '0x1111111111111111111111111111111111111111' as const;
+    const principal = await ceremony.findOrCreatePrincipal(owner);
     await ceremony.attachHuman(started.agentUuid, owner);
 
     const anon = await app.request(`/v1/enrollments/${started.agentUuid}`);
     expect(anon.status).toBe(401);
 
-    const token = await issueSessionToken(repo, config, owner);
+    const token = await issueHumanSession(repo, config, principal);
     const ok = await app.request(`/v1/enrollments/${started.agentUuid}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(ok.status).toBe(200);
 
-    const stranger = await issueSessionToken(
-      repo,
-      config,
+    const strangerPrincipal = await ceremony.findOrCreatePrincipal(
       '0x2222222222222222222222222222222222222222',
     );
+    const stranger = await issueHumanSession(repo, config, strangerPrincipal);
     const forbidden = await app.request(`/v1/enrollments/${started.agentUuid}`, {
       headers: { Authorization: `Bearer ${stranger}` },
     });
@@ -1738,7 +1571,7 @@ describe('live direct registration preparation', () => {
       });
       store.enrollments.push({
         agentUuid: 'agent_live_register',
-        deviceCode: 'LIVE',
+        deviceCodeHash: 'hash-LIVE', userCodeHash: 'uhash-LIVE', pairingExpiresAt: new Date(Date.now()+600000).toISOString(), pollIntervalSeconds: 5,
         principalId: 'prin_live_register',
         status: 'awaiting_register',
         publicJwk: { kty: 'EC', crv: 'P-256', x: 'a', y: 'b' },
@@ -1794,13 +1627,18 @@ describe('Registered URI exact match + confirmation depth', () => {
       });
       s.enrollments.push({
         agentUuid: 'agent_exact',
-        deviceCode: 'ABCD',
+        deviceCodeHash: 'hash-ABCD', userCodeHash: 'uhash-ABCD', pairingExpiresAt: new Date(Date.now()+600000).toISOString(), pollIntervalSeconds: 5,
         principalId: 'prin_exact',
         status: 'awaiting_onchain',
         publicJwk: { kty: 'EC', crv: 'P-256', x: 'a', y: 'b' },
         thumbprint: 't',
         keystoreProvider: 'os_hardware',
         agentUriPath: '/v1/agents/agent_exact/agent-uri.json',
+        registrationIntentHash: hashRegisterCall({ chainId: 84532, registry: IDENTITY_REGISTRY_SEPOLIA, agentURI: 'http://localhost/v1/agents/agent_exact/agent-uri.json' }),
+        registrationUserOpHash: ('0x' + 'aa'.repeat(32)) as `0x${string}`,
+        registrationTransactionHash: ('0x' + '44'.repeat(32)) as `0x${string}`,
+        registrationReceiptConfirmedAt: new Date().toISOString(),
+        agentRegistry: agentRegistryRef(84532, IDENTITY_REGISTRY_SEPOLIA),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -1825,6 +1663,7 @@ describe('Registered URI exact match + confirmation depth', () => {
         confirmations: 1,
         publicBaseUrl: 'http://localhost',
         registryAddress: IDENTITY_REGISTRY_SEPOLIA,
+        verifiedOwner: owner,
       },
     );
     expect(
@@ -1847,6 +1686,7 @@ describe('Registered URI exact match + confirmation depth', () => {
         confirmations: 1,
         publicBaseUrl: 'http://localhost',
         registryAddress: IDENTITY_REGISTRY_SEPOLIA,
+        verifiedOwner: owner,
       },
     );
     const e = (await repo.getStore()).enrollments.find((x) => x.agentUuid === 'agent_exact')!;
@@ -1863,7 +1703,7 @@ describe('applyRegisteredEvent fail-closed', () => {
     await repo.withLock(async (s) => {
       s.enrollments.push({
         agentUuid: 'agent_noprin',
-        deviceCode: 'ABCD',
+        deviceCodeHash: 'hash-ABCD', userCodeHash: 'uhash-ABCD', pairingExpiresAt: new Date(Date.now()+600000).toISOString(), pollIntervalSeconds: 5,
         status: 'awaiting_onchain',
         publicJwk: { kty: 'EC', crv: 'P-256', x: 'a', y: 'b' },
         thumbprint: 't',
@@ -1881,7 +1721,7 @@ describe('applyRegisteredEvent fail-closed', () => {
       });
       s.enrollments.push({
         agentUuid: 'agent_mismatch',
-        deviceCode: 'EFGH',
+        deviceCodeHash: 'hash-EFGH', userCodeHash: 'uhash-EFGH', pairingExpiresAt: new Date(Date.now()+600000).toISOString(), pollIntervalSeconds: 5,
         principalId: 'prin_other',
         status: 'awaiting_onchain',
         publicJwk: { kty: 'EC', crv: 'P-256', x: 'c', y: 'd' },
@@ -1911,7 +1751,7 @@ describe('applyRegisteredEvent fail-closed', () => {
         registryAddress: IDENTITY_REGISTRY_SEPOLIA,
       },
     );
-    expect(r1.applied).toBe(true);
+    expect(r1.applied).toBe(false);
     expect(r1.bound).toBe(false);
     expect(
       (await repo.getStore()).enrollments.find((e) => e.agentUuid === 'agent_noprin')?.status,
@@ -1935,7 +1775,7 @@ describe('applyRegisteredEvent fail-closed', () => {
         registryAddress: IDENTITY_REGISTRY_SEPOLIA,
       },
     );
-    expect(r2.applied).toBe(true);
+    expect(r2.applied).toBe(false);
     expect(r2.bound).toBe(false);
     expect(
       (await repo.getStore()).enrollments.find((e) => e.agentUuid === 'agent_mismatch')?.status,
@@ -1993,13 +1833,18 @@ describe('watcher pending confirmations', () => {
       });
       s.enrollments.push({
         agentUuid: 'agent_w',
-        deviceCode: 'WATCH',
+        deviceCodeHash: 'hash-WATCH', userCodeHash: 'uhash-WATCH', pairingExpiresAt: new Date(Date.now()+600000).toISOString(), pollIntervalSeconds: 5,
         principalId: 'prin_w',
         status: 'awaiting_onchain',
         publicJwk: { kty: 'EC', crv: 'P-256', x: 'a', y: 'b' },
         thumbprint: 't',
         keystoreProvider: 'os_hardware',
         agentUriPath: '/v1/agents/agent_w/agent-uri.json',
+        registrationIntentHash: hashRegisterCall({ chainId: 84532, registry: IDENTITY_REGISTRY_SEPOLIA, agentURI: 'http://localhost/v1/agents/agent_w/agent-uri.json' }),
+        registrationUserOpHash: ('0x' + 'aa'.repeat(32)) as `0x${string}`,
+        registrationTransactionHash: ('0x' + '77'.repeat(32)) as `0x${string}`,
+        registrationReceiptConfirmedAt: new Date().toISOString(),
+        agentRegistry: agentRegistryRef(84532, IDENTITY_REGISTRY_SEPOLIA),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -2011,6 +1856,7 @@ describe('watcher pending confirmations', () => {
       | undefined;
     const client = {
       getBlockNumber: async () => block,
+      readContract: async () => owner,
       watchContractEvent: (args: Record<string, unknown>) => {
         if (args.eventName === 'Registered') {
           registeredHandler = args.onLogs as typeof registeredHandler;

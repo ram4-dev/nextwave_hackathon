@@ -60,7 +60,7 @@ describe('AP2 safe-path integration', () => {
         kycExpiresAt: '2031-01-01T00:00:00.000Z', createdAt: now.toISOString(), updatedAt: now.toISOString(),
       });
       store.enrollments.push({
-        agentUuid: 'agent_1', deviceCode: 'device_1', principalId: 'principal_1', status: 'bound',
+        agentUuid: 'agent_1', deviceCodeHash: 'device_hash', userCodeHash: 'user_hash', pairingExpiresAt: '2031-01-01T00:00:00.000Z', pollIntervalSeconds: 5, principalId: 'principal_1', status: 'bound',
         publicJwk: agentSigner.publicKeyJwk, thumbprint,
         keystoreProvider: 'os_hardware', agentUriPath: '/agents/agent_1',
         createdAt: now.toISOString(), updatedAt: now.toISOString(),

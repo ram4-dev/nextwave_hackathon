@@ -2,13 +2,15 @@ import type { Abi, Log } from 'viem';
 import { getAddress, parseAbiItem } from 'viem';
 import { suspendOnTransfer } from '../domain/state-machine.js';
 import { eventId, type Repository } from '../persistence/repository.js';
-import { IDENTITY_REGISTRY_ABI } from './identity.js';
+import type { PendingRegistryEvent } from '../domain/types.js';
+import { hashRegisterCall, IDENTITY_REGISTRY_ABI, readOwnerOf } from './identity.js';
 import { setCredentialStatus } from '../credentials/jws.js';
 
 type WatchClient = {
   getBlockNumber: () => Promise<bigint>;
   getContractEvents?: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
   watchContractEvent?: (args: Record<string, unknown>) => () => void;
+  readContract?: (args: Record<string, unknown>) => Promise<unknown>;
 };
 
 export interface RegisteredPayload {
@@ -64,6 +66,8 @@ export interface ApplyRegisteredResult {
   applied: boolean;
   bound: boolean;
   reason?: string;
+  /** Only an unresolved authoritative UserOperation is eligible for retry. */
+  retryable?: boolean;
 }
 
 /**
@@ -80,6 +84,7 @@ export async function applyRegisteredEvent(
     currentBlock?: bigint;
     registryAddress?: `0x${string}`;
     publicBaseUrl?: string;
+    verifiedOwner?: `0x${string}`;
   },
 ): Promise<ApplyRegisteredResult> {
   const confirmations = opts?.confirmations ?? 1;
@@ -99,20 +104,6 @@ export async function applyRegisteredEvent(
     if (store.processedEvents.some((e) => e.id === id)) {
       return { applied: false, bound: false, reason: 'duplicate' };
     }
-    store.processedEvents.push({
-      id,
-      chainId,
-      txHash: payload.txHash,
-      logIndex: payload.logIndex,
-      eventName: 'Registered',
-      processedAt: new Date().toISOString(),
-      payload: {
-        agentId: payload.agentId,
-        agentURI: payload.agentURI,
-        owner: payload.owner,
-      },
-    });
-
     const enrollment = store.enrollments.find((e) => {
       if (e.status !== 'awaiting_onchain' && e.status !== 'awaiting_register') {
         return false;
@@ -122,6 +113,44 @@ export async function applyRegisteredEvent(
         return payload.agentURI === expectedAgentUri(opts.publicBaseUrl, e.agentUriPath);
       }
       return payload.agentURI === e.agentUriPath || payload.agentURI.endsWith(e.agentUriPath);
+    });
+
+    if (enrollment) {
+      // Event evidence is never a substitute for the recorded UserOperation
+      // and its authoritative successful-receipt resolution.
+      if (!enrollment.registrationIntentHash || !enrollment.registrationUserOpHash) {
+        return { applied: false, bound: false, reason: 'registration_evidence_missing' };
+      }
+      if (!enrollment.registrationTransactionHash || !enrollment.registrationReceiptConfirmedAt) {
+        return { applied: false, bound: false, reason: 'transaction_pending', retryable: true };
+      }
+      const resolvedTransactionHash = enrollment.registrationTransactionHash;
+      if (resolvedTransactionHash.toLowerCase() !== payload.txHash.toLowerCase()) {
+        return { applied: false, bound: false, reason: 'transaction_mismatch' };
+      }
+      const expectedRegistry = registryAddress && `eip155:${chainId}:${registryAddress}`;
+      if (!expectedRegistry || enrollment.agentRegistry?.toLowerCase() !== expectedRegistry.toLowerCase()) {
+        return { applied: false, bound: false, reason: 'registry_mismatch' };
+      }
+      const eventIntent = hashRegisterCall({ chainId, registry: registryAddress, agentURI: payload.agentURI });
+      if (!enrollment.registrationIntentHash || enrollment.registrationIntentHash !== eventIntent) {
+        return { applied: false, bound: false, reason: 'intent_mismatch' };
+      }
+      if (!opts?.verifiedOwner ||
+        opts.verifiedOwner.toLowerCase() !== payload.owner.toLowerCase() ||
+        !enrollment.principalId ||
+        store.principals.find((principal) => principal.id === enrollment.principalId)?.ownerAddress.toLowerCase() !== opts.verifiedOwner.toLowerCase()) {
+        return { applied: false, bound: false, reason: 'owner_mismatch' };
+      }
+    }
+    store.processedEvents.push({
+      id,
+      chainId,
+      txHash: payload.txHash,
+      logIndex: payload.logIndex,
+      eventName: 'Registered',
+      processedAt: new Date().toISOString(),
+      payload: { agentId: payload.agentId, agentURI: payload.agentURI, owner: payload.owner },
     });
 
     let bound = false;
@@ -304,6 +333,52 @@ function pendingKey(ev: PendingEvent): string {
   return eventId(ev.chainId, ev.payload.txHash, ev.payload.logIndex);
 }
 
+const MAX_DURABLE_PENDING_EVENTS = 128;
+const PENDING_EVENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function toDurablePending(event: PendingRegistered): PendingRegistryEvent {
+  const now = new Date().toISOString();
+  return {
+    id: pendingKey(event), chainId: event.chainId, registryAddress: event.registryAddress,
+    agentId: event.payload.agentId, agentURI: event.payload.agentURI, owner: event.payload.owner,
+    txHash: event.payload.txHash, logIndex: event.payload.logIndex, blockNumber: event.payload.blockNumber,
+    publicBaseUrl: event.publicBaseUrl, createdAt: now, updatedAt: now,
+  };
+}
+
+function fromDurablePending(event: PendingRegistryEvent): PendingRegistered {
+  return {
+    kind: 'Registered', chainId: event.chainId, registryAddress: event.registryAddress,
+    publicBaseUrl: event.publicBaseUrl,
+    payload: { agentId: event.agentId, agentURI: event.agentURI, owner: event.owner, txHash: event.txHash, logIndex: event.logIndex, blockNumber: event.blockNumber },
+  };
+}
+
+async function persistPendingRegistered(repo: Repository, event: PendingRegistered): Promise<void> {
+  const next = toDurablePending(event);
+  await repo.withLock((store) => {
+    const cutoff = Date.now() - PENDING_EVENT_MAX_AGE_MS;
+    store.pendingRegistryEvents = store.pendingRegistryEvents.filter((item) => Date.parse(item.createdAt) >= cutoff);
+    const existing = store.pendingRegistryEvents.find((item) => item.id === next.id);
+    if (existing) {
+      existing.updatedAt = next.updatedAt;
+      return;
+    }
+    store.pendingRegistryEvents.push(next);
+    if (store.pendingRegistryEvents.length > MAX_DURABLE_PENDING_EVENTS) {
+      store.pendingRegistryEvents.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+      store.pendingRegistryEvents.splice(0, store.pendingRegistryEvents.length - MAX_DURABLE_PENDING_EVENTS);
+    }
+  });
+}
+
+async function removePendingRegistered(repo: Repository, event: PendingRegistered): Promise<void> {
+  const id = pendingKey(event);
+  await repo.withLock((store) => {
+    store.pendingRegistryEvents = store.pendingRegistryEvents.filter((item) => item.id !== id);
+  });
+}
+
 /**
  * Start Registered/Transfer watchers via viem.
  * HTTP/public RPCs can use stateless eth_getLogs polling to avoid provider-side
@@ -341,13 +416,44 @@ export async function startEventWatcher(
     });
 
   const pending = new Map<string, PendingEvent>();
+  const resolveRegisteredOwner = async (event: PendingRegistered): Promise<`0x${string}` | undefined> => {
+    const readContract = client.readContract;
+    if (!readContract) return undefined;
+    try { return await readOwnerOf({ readContract }, event.registryAddress, BigInt(event.payload.agentId)); } catch { return undefined; }
+  };
   let timer: ReturnType<typeof setInterval> | undefined;
   let pollingTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
   let polling = false;
 
+  const applyRegistered = async (event: PendingRegistered, currentBlock: bigint): Promise<void> => {
+    const result = await applyRegisteredEvent(repo, event.chainId, event.payload, {
+      confirmations,
+      currentBlock,
+      registryAddress: event.registryAddress,
+      publicBaseUrl: event.publicBaseUrl,
+      verifiedOwner: await resolveRegisteredOwner(event),
+    });
+    if (result.retryable) {
+      await persistPendingRegistered(repo, event);
+      pending.set(pendingKey(event), event);
+      return;
+    }
+    await removePendingRegistered(repo, event);
+  };
+
+  const restoreDurablePending = async (): Promise<void> => {
+    const store = await repo.getStore();
+    for (const event of store.pendingRegistryEvents) {
+      if (event.chainId === opts.chainId && getAddress(event.registryAddress) === registry) {
+        pending.set(event.id, fromDurablePending(event));
+      }
+    }
+  };
+
   const flush = async (): Promise<void> => {
     if (stopped) return;
+    await restoreDurablePending();
     const currentBlock = await client.getBlockNumber();
     for (const [key, ev] of [...pending.entries()]) {
       if (!hasEnoughConfirmations(ev.payload.blockNumber, currentBlock, confirmations)) {
@@ -356,12 +462,7 @@ export async function startEventWatcher(
       pending.delete(key);
       try {
         if (ev.kind === 'Registered') {
-          await applyRegisteredEvent(repo, ev.chainId, ev.payload, {
-            confirmations,
-            currentBlock,
-            registryAddress: ev.registryAddress,
-            publicBaseUrl: ev.publicBaseUrl,
-          });
+          await applyRegistered(ev, currentBlock);
         } else {
           await applyTransferEvent(repo, ev.chainId, ev.payload, {
             confirmations,
@@ -389,12 +490,7 @@ export async function startEventWatcher(
       return;
     }
     if (ev.kind === 'Registered') {
-      await applyRegisteredEvent(repo, ev.chainId, ev.payload, {
-        confirmations,
-        currentBlock,
-        registryAddress: ev.registryAddress,
-        publicBaseUrl: ev.publicBaseUrl,
-      });
+      await applyRegistered(ev, currentBlock);
     } else {
       await applyTransferEvent(repo, ev.chainId, ev.payload, {
         confirmations,

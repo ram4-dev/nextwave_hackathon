@@ -1,5 +1,11 @@
 # Browser Wallet-Only Migration Specification
 
+> **SUPERSEDED / HISTORICAL (2026-08-30):** This document records the removed
+> BrowserWallet/SIWE experiment. Production uses CDP email OTP and a CDP Smart
+> Account UserOperation; see [`../FLOW.md`](../FLOW.md) and
+> [`IMPLEMENTATION.md`](./IMPLEMENTATION.md). Nothing below is current runtime
+> behavior or a rollout instruction.
+
 **Decision:** Accepted
 **Implementation status:** Code-complete; automated verification passed; manual live E2E pending
 **Decision date:** 2026-08-29

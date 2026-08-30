@@ -116,14 +116,14 @@ export function hashRegisterCall(opts: {
 }
 
 /**
- * Build the exact direct transaction the authenticated browser wallet submits.
+ * Build the exact call the authenticated CDP Smart Account UserOperation submits.
  * KYA/relayer must NEVER be msg.sender.
  */
 export function buildRegisterTransaction(opts: {
   chainId: number;
   registry: `0x${string}`;
   agentURI: string;
-  /** Authenticated browser-wallet owner address (checksummed into `from`). */
+  /** Authenticated Smart Account owner address (checksummed into `from`). */
   from: `0x${string}`;
 }): {
   chainId: number;

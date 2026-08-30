@@ -14,7 +14,7 @@ begin
       and attname = 'prompt'
       and not attisdropped
   ) then
-    alter table public.mandate_requests drop column prompt cascade;
+    alter table public.mandate_requests drop column prompt;
   end if;
 end $$;
 

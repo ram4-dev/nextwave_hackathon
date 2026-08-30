@@ -1,762 +1,92 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  AgentKeyProvider,
-  generateBrowserAgentKey,
-  signChallengeWithHandle,
-  useAgentKey,
-} from './AgentKeyProvider';
-import {
-  BrowserWalletConnector,
-  formatBrowserWalletError,
-  type RegisterIntent,
-  type WalletOption,
-} from './browserWalletConnector';
+import { useState } from 'react';
+import { useCurrentUser, useGetAccessToken, useSendUserOperation, useSignInWithEmail, useVerifyEmailOTP } from '@coinbase/cdp-hooks';
+import { AgentKeyProvider, generateBrowserAgentKey, signChallengeWithHandle, useAgentKey } from './AgentKeyProvider';
 import { formatUnknownError } from './errorMessage.js';
+import { CdpAuth, type CdpSession } from './CdpAuth.js';
+import { advanceAfterVerifiedKyc, awaitRegistrationEvidence, completeRegistrationAndClaimCredential, ensureActiveCredential, selectBoundSmartAccount } from './registration.js';
 
-type Step =
-  | 'intro'
-  | 'agent'
-  | 'human'
-  | 'kyc'
-  | 'fingerprint'
-  | 'register'
-  | 'challenge'
-  | 'done';
-
-interface PublicConfig {
-  mode: string;
-  issuer: string;
-  chainIdSepolia: number;
-  identityRegistrySepolia: string;
-  siweDomain?: string;
-  siweUri?: string;
-}
-
-interface EnrollmentStart {
+type Step = 'intro' | 'agent' | 'human' | 'kyc' | 'fingerprint' | 'register' | 'challenge' | 'done';
+type Enrollment = {
   agentUuid: string;
   deviceCode: string;
+  user_code?: string;
   thumbprint: string;
   fingerprintDisplay: string;
-  agentUriUrl: string;
-}
+};
+type Session = CdpSession;
 
-const DEMO_ADDRESS = '0x1111111111111111111111111111111111111111' as const;
-
-async function api<T>(
-  path: string,
-  init?: RequestInit & { token?: string },
-): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set('Content-Type', 'application/json');
+async function api<T>(path: string, init?: RequestInit & { token?: string }): Promise<T> {
+  const headers = new Headers(init?.headers); headers.set('Content-Type', 'application/json');
   if (init?.token) headers.set('Authorization', `Bearer ${init.token}`);
-  const res = await fetch(path, { ...init, headers });
-  const data = await res.json();
-  if (!res.ok) {
-    const responseError =
-      data && typeof data === 'object' && 'error' in data
-        ? (data as { error?: unknown }).error
-        : data;
-    throw new Error(
-      formatUnknownError(responseError, res.statusText || `Request failed (${res.status})`),
-    );
-  }
+  const response = await fetch(path, { ...init, headers }); const data = await response.json();
+  if (!response.ok) throw new Error(formatUnknownError((data as { error?: unknown })?.error, `Request failed (${response.status})`));
   return data as T;
 }
 
 function Wizard() {
-  const agentKey = useAgentKey();
-  const walletConnector = useRef<BrowserWalletConnector | null>(null);
-  if (!walletConnector.current) walletConnector.current = new BrowserWalletConnector();
-  const [step, setStep] = useState<Step>('intro');
-  const [config, setConfig] = useState<PublicConfig | null>(null);
-  const [log, setLog] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const [token, setToken] = useState<string | null>(null);
-  const [enrollment, setEnrollment] = useState<EnrollmentStart | null>(null);
-  const [credential, setCredential] = useState<string | null>(null);
-  const [agentId, setAgentId] = useState<string | null>(null);
-  const [keystore, setKeystore] = useState<string>('');
-  const [kycUrl, setKycUrl] = useState<string | null>(null);
-  const [challengeResult, setChallengeResult] = useState<string | null>(null);
-  const [wallets, setWallets] = useState<WalletOption[]>([]);
-  const [selectedWalletId, setSelectedWalletId] = useState('');
-  const [walletAddress, setWalletAddress] = useState<`0x${string}` | null>(null);
-  const [discoveringWallets, setDiscoveringWallets] = useState(false);
-
-  const isLive = config?.mode === 'live';
-  const push = (msg: string) => setLog((l) => [...l, msg]);
-
-  useEffect(() => {
-    api<PublicConfig>('/v1/config')
-      .then(setConfig)
-      .catch((e) => setError(formatUnknownError(e)));
-  }, []);
-
-  useEffect(() => {
-    const connector = walletConnector.current!;
-    const unsubscribe = connector.subscribe((event) => {
-      if (event.type === 'accountsChanged') {
-        setToken(null);
-        setWalletAddress(null);
-        setError('Wallet account changed. KYC is address-bound; sign in again.');
-        setStep('human');
-      } else if (event.type === 'chainChanged' && event.chainId !== 84532) {
-        setToken(null);
-        setError('Wallet left Base Sepolia. Switch back and sign in again.');
-        setStep('human');
-      } else if (event.type === 'disconnect') {
-        setToken(null);
-        setWalletAddress(null);
-        setError('Browser wallet disconnected. Reconnect and sign in again.');
-        setStep('human');
-      }
+  const agentKey = useAgentKey(); const { currentUser } = useCurrentUser(); const { getAccessToken } = useGetAccessToken(); const { sendUserOperation } = useSendUserOperation(); const { signInWithEmail } = useSignInWithEmail(); const { verifyEmailOTP } = useVerifyEmailOTP();
+  const [step, setStep] = useState<Step>('intro'); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null); const [log, setLog] = useState<string[]>([]);
+  const [enrollment, setEnrollment] = useState<Enrollment | null>(null); const [session, setSession] = useState<Session | null>(null); const [kycUrl, setKycUrl] = useState<string | null>(null);
+  const push = (message: string) => setLog((items) => [...items, message]);
+  const run = async (work: () => Promise<void>) => { setBusy(true); setError(null); try { await work(); } catch (cause) { setError(formatUnknownError(cause)); } finally { setBusy(false); } };
+  const createAgent = () => run(async () => {
+    const key = await generateBrowserAgentKey();
+    agentKey.setHandle(key);
+    const started = await api<{
+      agentUuid: string;
+      device_code: string;
+      user_code: string;
+      thumbprint: string;
+      fingerprintDisplay: string;
+    }>('/v1/device-enrollments', {
+      method: 'POST',
+      body: JSON.stringify({ publicJwk: key.publicJwk, keystoreProvider: key.keystoreProvider }),
     });
-    return () => {
-      unsubscribe();
-      connector.disconnect();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (isLive && step === 'human' && wallets.length === 0 && !discoveringWallets) {
-      void discoverBrowserWallets();
-    }
-  }, [isLive, step]);
-
-  async function discoverBrowserWallets(): Promise<WalletOption[]> {
-    setDiscoveringWallets(true);
-    setError(null);
-    try {
-      const discovered = await walletConnector.current!.discover();
-      setWallets(discovered);
-      setSelectedWalletId((current) => {
-        if (discovered.some((wallet) => wallet.id === current)) return current;
-        return discovered.length === 1 ? discovered[0]!.id : '';
+    const { saveAgentKeyHandle, isIndexedDbAvailable } = await import('./agent/keyStore.js');
+    if (await isIndexedDbAvailable()) {
+      await saveAgentKeyHandle({
+        privateKey: key.privateKey,
+        publicJwk: key.publicJwk,
+        thumbprint: started.thumbprint,
+        keystoreProvider: key.keystoreProvider,
       });
-      if (discovered.length === 0) {
-        setError('No EIP-1193 browser wallet found. Install or enable one to continue.');
-      }
-      return discovered;
-    } catch (e) {
-      setError(formatBrowserWalletError(e));
-      return [];
-    } finally {
-      setDiscoveringWallets(false);
     }
-  }
-
-  async function generateAgentKey() {
-    setBusy(true);
-    setError(null);
-    try {
-      const handle = await generateBrowserAgentKey();
-      agentKey.setHandle(handle);
-      setKeystore(
-        `${handle.keystoreProvider}${handle.nonExtractable ? ' (non-extractable)' : ' (extractable fallback)'}`,
-      );
-      const started = await api<EnrollmentStart>('/v1/enrollments', {
-        method: 'POST',
-        body: JSON.stringify({
-          publicJwk: handle.publicJwk,
-          keystoreProvider: handle.keystoreProvider,
-        }),
-      });
-      setEnrollment(started);
-      push(
-        `Agent key created (${handle.keystoreProvider}); device code ${started.deviceCode}. Private key stays in CryptoKey ref — not React state.`,
-      );
-      setStep('human');
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function demoSignIn() {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await api<{ token: string; principalId: string }>(
-        '/v1/auth/verify',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            address: DEMO_ADDRESS,
-            message: `KYA demo browser-wallet sign in:\nURI: http://localhost:5173\nVersion: 1\nChain ID: 84532\nNonce: DEMO_BYPASS\nIssued At: ${new Date().toISOString()}`,
-            signature: '0xdemo',
-          }),
-        },
-      );
-      setToken(res.token);
-      push(`Demo SIWE session for ${DEMO_ADDRESS} (principal ${res.principalId})`);
-      if (!enrollment) throw new Error('Create agent key first');
-      const attached = await api<{ needsKyc: boolean; status: string }>(
-        `/v1/enrollments/${enrollment.agentUuid}/attach`,
-        { method: 'POST', token: res.token, body: '{}' },
-      );
-      push(`Attached human; status=${attached.status}; needsKyc=${attached.needsKyc}`);
-      setStep(attached.needsKyc ? 'kyc' : 'fingerprint');
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function liveSignIn() {
-    setBusy(true);
-    setError(null);
-    try {
-      if (!enrollment) throw new Error('Create agent key first');
-      let walletId = selectedWalletId;
-      if (!walletId) {
-        const discovered = await discoverBrowserWallets();
-        if (discovered.length !== 1) {
-          throw new Error('Select the browser wallet to use for the whole ceremony.');
-        }
-        walletId = discovered[0]!.id;
-        setSelectedWalletId(walletId);
-      }
-
-      const connector = walletConnector.current!;
-      const connected = await connector.connect(walletId);
-      await connector.ensureBaseSepolia();
-      setWalletAddress(connected.address);
-      push(`Browser wallet connected: ${connected.address}`);
-
-      const domain = config?.siweDomain ?? 'localhost';
-      const uri = config?.siweUri ?? 'http://localhost:5173';
-      const { nonce } = await api<{ nonce: string }>('/v1/auth/nonce');
-      const issuedAt = new Date().toISOString();
-      const expirationTime = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-      push('SIWE nonce issued; requesting a browser-wallet signature…');
-      const signed = await connector.signSiwe({
-        nonce,
-        domain,
-        uri,
-        issuedAt,
-        expirationTime,
-      });
-      const res = await api<{
-        token: string;
-        principalId: string;
-        demo: boolean;
-        address: `0x${string}`;
-      }>(
-        '/v1/auth/verify',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            address: signed.address,
-            message: signed.message,
-            signature: signed.signature,
-          }),
-        },
-      );
-      if (res.demo) throw new Error('Unexpected demo session in live mode');
-      if (res.address.toLowerCase() !== signed.address.toLowerCase()) {
-        throw new Error('Verified SIWE address does not match the selected wallet');
-      }
-      setToken(res.token);
-      push(`Live SIWE session for ${signed.address}`);
-      const attached = await api<{ needsKyc: boolean; status: string }>(
-        `/v1/enrollments/${enrollment.agentUuid}/attach`,
-        { method: 'POST', token: res.token, body: '{}' },
-      );
-      push(`Attached human; status=${attached.status}; needsKyc=${attached.needsKyc}`);
-      setStep(attached.needsKyc ? 'kyc' : 'fingerprint');
-    } catch (e) {
-      setError(formatBrowserWalletError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function completeDemoKyc() {
-    if (!token) return;
-    if (isLive) {
-      setError('confirm-demo / demo KYC is forbidden in live mode');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await api('/v1/kyc/demo/complete', { method: 'POST', token, body: '{}' });
-      push('Demo KYC verified (labeled demo adapter; no PII retained)');
-      if (enrollment) {
-        await api(`/v1/enrollments/${enrollment.agentUuid}/attach`, {
-          method: 'POST',
-          token,
-          body: '{}',
-        });
-      }
-      setStep('fingerprint');
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function startLiveKyc() {
-    if (!token) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const session = await api<{
-        verificationUrl: string;
-        provider: string;
-        demo: boolean;
-      }>('/v1/kyc/sessions', { method: 'POST', token, body: '{}' });
-      if (session.demo) throw new Error('Demo KYC returned in live mode');
-      setKycUrl(session.verificationUrl);
-      push(`Hosted KYC started via ${session.provider}; complete in provider UI then refresh status`);
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function refreshKycStatus() {
-    if (!token || !enrollment) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const me = await api<{
-        principal: { kycStatus: string } | null;
-      }>('/v1/me', { token });
-      push(`Principal KYC status=${me.principal?.kycStatus ?? 'none'}`);
-      if (me.principal?.kycStatus === 'verified') {
-        await api(`/v1/enrollments/${enrollment.agentUuid}/attach`, {
-          method: 'POST',
-          token,
-          body: '{}',
-        });
-        setStep('fingerprint');
-      }
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function approveFingerprint() {
-    if (!token || !enrollment) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api(`/v1/enrollments/${enrollment.agentUuid}/approve-fingerprint`, {
-        method: 'POST',
-        token,
-        body: JSON.stringify({ thumbprint: enrollment.thumbprint }),
-      });
-      push(`Fingerprint approved: ${enrollment.fingerprintDisplay}`);
-      setStep('register');
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function confirmDemoRegister() {
-    if (!token || !enrollment) return;
-    if (isLive) {
-      setError('Never call confirm-demo in live mode');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const prepared = await api<{ mode: string; agentURI: string }>(
-        `/v1/enrollments/${enrollment.agentUuid}/prepare-register`,
-        { method: 'POST', token, body: '{}' },
-      );
-      push(`Prepared register (${prepared.mode}) URI=${prepared.agentURI}`);
-      const confirmed = await api<{
-        token: string;
-        agentId: string;
-        agentRegistry: string;
-      }>(`/v1/enrollments/${enrollment.agentUuid}/confirm-demo`, {
-        method: 'POST',
-        token,
-        body: '{}',
-      });
-      setCredential(confirmed.token);
-      setAgentId(confirmed.agentId);
-      push(
-        `Bound agentId=${confirmed.agentId} registry=${confirmed.agentRegistry}; JWS issued`,
-      );
-      setStep('challenge');
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function liveRegister() {
-    if (!token || !enrollment) return;
-    setBusy(true);
-    setError(null);
-    try {
-      if (!config) throw new Error('Public configuration is not loaded');
-      const prepared = await api<RegisterIntent>(
-        `/v1/enrollments/${enrollment.agentUuid}/prepare-register?chainId=84532`, {
-        method: 'POST',
-        token,
-        body: '{}',
-        },
-      );
-      if (prepared.mode !== 'live' || !prepared.register) {
-        throw new Error('Expected a live direct transaction from prepare-register');
-      }
-      const connector = walletConnector.current!;
-      await connector.ensureBaseSepolia();
-      push(`Prepared register URI=${prepared.agentURI}; simulating exact registry call…`);
-      const transactionHash = await connector.sendRegister(
-        prepared,
-        config.identityRegistrySepolia as `0x${string}`,
-      );
-      push(`Transaction submitted: ${transactionHash}`);
-      const receipt = await connector.waitForReceipt(transactionHash);
-      push(`Transaction confirmed in block ${receipt.blockNumber}; waiting for finalized binding…`);
-
-      let bound = false;
-      for (let i = 0; i < 30; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const detail = await api<{
-          status: string;
-          agentId?: string;
-        }>(`/v1/enrollments/${enrollment.agentUuid}`, { token });
-        push(`Poll ${i + 1}: status=${detail.status} agentId=${detail.agentId ?? '—'}`);
-        if (detail.status === 'bound' && detail.agentId) {
-          bound = true;
-          setAgentId(detail.agentId);
-          break;
-        }
-      }
-      if (!bound) throw new Error('Timed out waiting for on-chain Registered binding');
-
-      const claimed = await api<{
-        token: string;
-        agentId: string;
-        agentRegistry: string;
-      }>(`/v1/enrollments/${enrollment.agentUuid}/claim-credential`, {
-        method: 'POST',
-        token,
-        body: '{}',
-      });
-      setCredential(claimed.token);
-      push(`Credential claimed for agentId=${claimed.agentId}`);
-      setStep('challenge');
-    } catch (e) {
-      setError(formatBrowserWalletError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runChallenge() {
-    if (!enrollment) return;
-    const handle = agentKey.getHandle();
-    if (!handle) {
-      setError('Local agent CryptoKey handle missing — regenerate key in this session');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const challenge = await api<{
-        nonce: string;
-        audience: string;
-        timestamp: string;
-        intent_hash: string;
-      }>(`/v1/agents/${enrollment.agentUuid}/challenges`, {
-        method: 'POST',
-        body: JSON.stringify({ intent: { action: 'wizard-ping' } }),
-      });
-      const signature = await signChallengeWithHandle(handle, {
-        nonce: challenge.nonce,
-        audience: challenge.audience,
-        timestamp: challenge.timestamp,
-        intent_hash: challenge.intent_hash,
-      });
-      const verified = await api<{ ok: boolean; thumbprint: string }>(
-        `/v1/agents/${enrollment.agentUuid}/challenges/verify`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            nonce: challenge.nonce,
-            audience: challenge.audience,
-            timestamp: challenge.timestamp,
-            intent_hash: challenge.intent_hash,
-            signature,
-          }),
-        },
-      );
-      setChallengeResult(`ok thumbprint=${verified.thumbprint.slice(0, 16)}…`);
-      push('Challenge verified with in-memory CryptoKey (not HW-proven by browser WebCrypto)');
-      setStep('done');
-    } catch (e) {
-      setError(formatUnknownError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const steps: Step[] = [
-    'intro',
-    'agent',
-    'human',
-    'kyc',
-    'fingerprint',
-    'register',
-    'challenge',
-    'done',
-  ];
-
-  return (
-    <div className="app">
-      <div className="mode-pill">
-        {config?.mode === 'demo'
-          ? 'Demo mode — labeled mocks / no chain writes'
-          : 'Live mode — Base Sepolia + browser wallet / SIWE / hosted KYC'}
-      </div>
-      <h1 className="brand">KYA</h1>
-      <p className="tagline">
-        Know Your Agent — bind a verified human Principal to a local P-256 agent key and an
-        ERC-8004 Agent ID on Base. Merchant and payments are out of scope.
-      </p>
-
-      <div className="steps">
-        {steps.map((s) => (
-          <span key={s} className={`step-dot ${step === s ? 'active' : ''}`}>
-            {s}
-          </span>
-        ))}
-      </div>
-
-      {step === 'intro' && (
-        <section className="panel">
-          <h2>Ceremony</h2>
-          <p>
-            {isLive
-              ? 'Live path: browser wallet + SIWE → hosted KYC if needed → fingerprint → direct register transaction → claim credential → challenge.'
-              : 'Demo path: labeled SIWE bypass → demo KYC → fingerprint → simulated Registered → JWS. Demo steps are explicitly labeled.'}
-          </p>
-          {config && (
-            <div className="mono">
-              Registry Sepolia: {config.identityRegistrySepolia}
-              <br />
-              Issuer: {config.issuer}
-            </div>
-          )}
-          <div className="actions">
-            <button type="button" disabled={busy} onClick={() => setStep('agent')}>
-              Start enrollment
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === 'agent' && (
-        <section className="panel">
-          <h2>1. Local agent key</h2>
-          <p>
-            Generate a P-256 key with WebCrypto (prefer non-extractable). Browser WebCrypto does
-            not prove hardware backing — production should use a native OS-keystore behind
-            AgentKeyProvider. Private material never enters React state or the server.
-          </p>
-          <div className="actions">
-            <button type="button" disabled={busy} onClick={generateAgentKey}>
-              Generate agent key
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === 'human' && enrollment && (
-        <section className="panel">
-          <h2>2. Browser wallet (SIWE)</h2>
-          <p>
-            {isLive
-              ? 'Select one injected wallet. The same address signs in, owns the KYC Principal, and submits register(agentURI).'
-              : 'Demo: labeled DEMO_BYPASS session (not a real signature).'}
-          </p>
-          <div className="mono">
-            Device code: {enrollment.deviceCode}
-            <br />
-            Keystore: {keystore}
-            <br />
-            Fingerprint: {enrollment.fingerprintDisplay}
-          </div>
-          <div className="actions">
-            {isLive ? (
-              <>
-                <label className="wallet-select">
-                  Browser wallet
-                  <select
-                    value={selectedWalletId}
-                    disabled={busy || discoveringWallets || wallets.length === 0}
-                    onChange={(event) => setSelectedWalletId(event.target.value)}
-                  >
-                    <option value="">Select wallet</option>
-                    {wallets.map((wallet) => (
-                      <option key={wallet.id} value={wallet.id}>
-                        {wallet.name}{wallet.rdns ? ` (${wallet.rdns})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={busy || discoveringWallets}
-                  onClick={() => void discoverBrowserWallets()}
-                >
-                  {discoveringWallets ? 'Discovering…' : 'Refresh wallets'}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy || discoveringWallets || !selectedWalletId}
-                  onClick={liveSignIn}
-                >
-                  Connect wallet &amp; sign in
-                </button>
-              </>
-            ) : (
-              <button type="button" disabled={busy} onClick={demoSignIn}>
-                Demo browser-wallet sign in
-              </button>
-            )}
-          </div>
-          {isLive && walletAddress && <div className="mono">Connected: {walletAddress}</div>}
-        </section>
-      )}
-
-      {step === 'kyc' && (
-        <section className="panel">
-          <h2>3. KYC (person only)</h2>
-          <p>
-            KYC runs only when the Principal has no active verification. Provider never sees the
-            agent.
-          </p>
-          {isLive ? (
-            <>
-              <div className="actions">
-                <button type="button" disabled={busy} onClick={startLiveKyc}>
-                  Start hosted KYC
-                </button>
-                <button type="button" disabled={busy} onClick={refreshKycStatus}>
-                  Refresh KYC status
-                </button>
-              </div>
-              {kycUrl && (
-                <p className="mono">
-                  Open:{' '}
-                  <a href={kycUrl} target="_blank" rel="noreferrer">
-                    {kycUrl}
-                  </a>
-                </p>
-              )}
-            </>
-          ) : (
-            <div className="actions">
-              <button type="button" disabled={busy} onClick={completeDemoKyc}>
-                Complete demo KYC
-              </button>
-            </div>
-          )}
-        </section>
-      )}
-
-      {step === 'fingerprint' && enrollment && (
-        <section className="panel">
-          <h2>4. Approve fingerprint</h2>
-          <p>Confirm the local agent public key fingerprint before on-chain binding.</p>
-          <div className="mono">{enrollment.fingerprintDisplay}</div>
-          <div className="actions">
-            <button type="button" disabled={busy} onClick={approveFingerprint}>
-              Approve fingerprint
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === 'register' && (
-        <section className="panel">
-          <h2>5. Register on Identity Registry</h2>
-          <p>
-            {isLive
-              ? 'Live: simulate and submit register(agentURI) directly from the authenticated browser wallet. The wallet pays Base Sepolia gas.'
-              : 'Demo: confirm simulated Registered event and issue JWS (labeled demo).'}
-          </p>
-          <div className="actions">
-            {isLive ? (
-              <button type="button" disabled={busy} onClick={liveRegister}>
-                Submit register transaction + claim
-              </button>
-            ) : (
-              <button type="button" disabled={busy} onClick={confirmDemoRegister}>
-                Confirm demo registration
-              </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      {step === 'challenge' && (
-        <section className="panel">
-          <h2>6. Challenge / verify</h2>
-          <p>
-            Sign a platform challenge with the in-session CryptoKey handle preserved by
-            AgentKeyProvider.
-          </p>
-          <div className="actions">
-            <button type="button" disabled={busy} onClick={runChallenge}>
-              Sign &amp; verify challenge
-            </button>
-          </div>
-          {challengeResult && <div className="mono ok">{challengeResult}</div>}
-        </section>
-      )}
-
-      {step === 'done' && (
-        <section className="panel">
-          <h2 className="ok">Bound</h2>
-          <p>
-            Agent ID <strong>{agentId}</strong> is linked to the Principal with a short-lived KYA
-            credential (<code>cnf.jkt</code>). Copied JWT is useless without the local private
-            key.
-          </p>
-          {credential && <div className="mono">{credential.slice(0, 120)}…</div>}
-        </section>
-      )}
-
-      {error && <div className="err">{error}</div>}
-
-      <div className="log">
-        <h3>Ceremony log</h3>
-        <ul>
-          {log.map((l, i) => (
-            <li key={`${i}-${l}`}>{l}</li>
-          ))}
-        </ul>
-      </div>
-    </div>
-  );
+    setEnrollment({
+      agentUuid: started.agentUuid,
+      deviceCode: started.device_code,
+      user_code: started.user_code,
+      thumbprint: started.thumbprint,
+      fingerprintDisplay: started.fingerprintDisplay,
+    });
+    push(`Local P-256 key created; user code ${started.user_code}. Private material stays in IndexedDB when supported.`);
+    setStep('human');
+  });
+  const exchangeCdp = async (accessToken: string) => api<Session>('/v1/auth/cdp/exchange', { method: 'POST', body: JSON.stringify({ accessToken }) });
+  const completeCdp = async (next: Session) => {
+    if (!enrollment?.user_code) throw new Error('Enrollment is unavailable. Restart the ceremony.');
+    setSession(next);
+    const claimed = await api<{ status: string; needsKyc: boolean }>('/v1/device-enrollments/claim', {
+      method: 'POST',
+      token: next.token,
+      body: JSON.stringify({ user_code: enrollment.user_code, thumbprint: enrollment.thumbprint }),
+    });
+    push(`CDP Smart Account ${next.wallet} bound to Principal ${next.principalId}.`);
+    setStep(claimed.needsKyc ? 'kyc' : 'fingerprint');
+  };
+  const startKyc = () => run(async () => { if (!session) throw new Error('Sign in first.'); const result = await api<{ verificationUrl: string; provider: string }>('/v1/kyc/sessions', { method: 'POST', token: session.token, body: '{}' }); setKycUrl(result.verificationUrl); push(`Hosted KYC created through ${result.provider}; only its webhook decides verification.`); });
+  const refreshKyc = () => run(async () => { if (!session || !enrollment) throw new Error('Sign in first.'); await advanceAfterVerifiedKyc({ getMe: () => api<{ principal: { kycStatus: string } | null }>('/v1/me', { token: session.token }), advanceToFingerprint: () => setStep('fingerprint') }); });
+  const approve = () => run(async () => { if (!session || !enrollment) throw new Error('Sign in first.'); await api(`/v1/enrollments/${enrollment.agentUuid}/approve-fingerprint`, { method: 'POST', token: session.token, body: JSON.stringify({ thumbprint: enrollment.thumbprint }) }); setStep('register'); });
+  const claimCredential = () => { if (!session || !enrollment) throw new Error('Sign in first.'); return api(`/v1/enrollments/${enrollment.agentUuid}/claim-credential`, { method: 'POST', token: session.token, body: '{}' }); };
+  const register = () => run(async () => { if (!session || !enrollment) throw new Error('Sign in first.'); const smart = selectBoundSmartAccount(currentUser?.evmSmartAccountObjects?.[0], session.wallet); const intent = await api<{ intentHash: string; register: { to: `0x${string}`; data: `0x${string}`; value: '0x0' } }>(`/v1/enrollments/${enrollment.agentUuid}/registration-intent`, { method: 'POST', token: session.token, body: '{}' }); await completeRegistrationAndClaimCredential({ sendUserOperation: () => sendUserOperation({ evmSmartAccount: smart, network: 'base-sepolia', useCdpPaymaster: true, calls: [{ to: intent.register.to, data: intent.register.data, value: 0n }] }), recordSubmission: (userOpHash) => api(`/v1/enrollments/${enrollment.agentUuid}/registration-submissions`, { method: 'POST', token: session.token, body: JSON.stringify({ intentHash: intent.intentHash, userOpHash }) }), awaitEvidence: () => awaitRegistrationEvidence({ resolveSubmission: () => api(`/v1/enrollments/${enrollment.agentUuid}/registration-submissions/resolve`, { method: 'POST', token: session.token, body: '{}' }), getEnrollment: () => api(`/v1/enrollments/${enrollment.agentUuid}`, { token: session.token }) }), claimCredential, advanceToChallenge: () => { push('ERC-8004 event, ownerOf, and active credential confirmed.'); setStep('challenge'); } }); });
+  const challenge = () => run(async () => { if (!enrollment) throw new Error('Enrollment missing.'); const handle = agentKey.getHandle(); if (!handle) throw new Error('Local agent key is unavailable.'); await ensureActiveCredential(claimCredential, async () => { const payload = await api<{ nonce: string; audience: string; timestamp: string; intent_hash: string }>(`/v1/agents/${enrollment.agentUuid}/challenges`, { method: 'POST', body: JSON.stringify({ intent: { action: 'wizard-ping' } }) }); const signature = await signChallengeWithHandle(handle, payload); await api(`/v1/agents/${enrollment.agentUuid}/challenges/verify`, { method: 'POST', body: JSON.stringify({ ...payload, signature }) }); setStep('done'); }); });
+  return <div className="app"><div className="mode-pill">CDP email OTP · embedded Smart Account · Base Sepolia</div><h1 className="brand">KYA</h1><p className="tagline">A verified human authorizes an independent local P-256 agent key. CDP owns the human wallet; KYA never receives wallet keys.</p>
+    {step === 'intro' && <section className="panel"><h2>Ceremony</h2><p>Email OTP provisions a CDP Smart Account. Its address becomes the KYA Principal wallet.</p><button disabled={busy} onClick={() => setStep('agent')}>Start enrollment</button></section>}
+    {step === 'agent' && <section className="panel"><h2>1. Local agent key</h2><p>Generate the non-extractable P-256 key before attaching a person.</p><button disabled={busy} onClick={createAgent}>Generate agent key</button></section>}
+    {step === 'human' && enrollment && <section className="panel"><h2>2. Email sign-in</h2><p>Use email OTP. No wallet extension or manual chain switch is involved.</p><div className="mono">User code: {enrollment.user_code}<br/>Fingerprint: {enrollment.fingerprintDisplay}</div><CdpAuth requestOtp={signInWithEmail} verifyOtp={verifyEmailOTP} getAccessToken={getAccessToken} exchangeSession={exchangeCdp} onSession={completeCdp} /></section>}
+    {step === 'kyc' && <section className="panel"><h2>3. KYC</h2><div className="actions"><button disabled={busy} onClick={startKyc}>Start hosted KYC</button><button disabled={busy} onClick={refreshKyc}>Refresh status</button></div>{kycUrl && <a href={kycUrl} target="_blank" rel="noreferrer">Open hosted KYC</a>}</section>}
+    {step === 'fingerprint' && enrollment && <section className="panel"><h2>4. Approve fingerprint</h2><div className="mono">{enrollment.fingerprintDisplay}</div><button disabled={busy} onClick={approve}>Approve local agent key</button></section>}
+    {step === 'register' && <section className="panel"><h2>5. Register ERC-8004</h2><p>CDP requests approval for exactly one sponsored Base Sepolia UserOperation.</p><button disabled={busy} onClick={register}>Approve &amp; submit Smart Account operation</button></section>}
+    {step === 'challenge' && <section className="panel"><h2>6. Agent challenge</h2><p>The registry watcher must confirm registration before a credential can be claimed.</p><button disabled={busy} onClick={challenge}>Sign &amp; verify agent challenge</button></section>}
+    {step === 'done' && <section className="panel"><h2 className="ok">Complete</h2><p>Agent challenge verified with the locally held agent key.</p></section>}{error && <div className="err">{error}</div>}<div className="log"><h3>Ceremony log</h3><ul>{log.map((entry, index) => <li key={`${index}-${entry}`}>{entry}</li>)}</ul></div></div>;
 }
-
-export function App() {
-  return (
-    <AgentKeyProvider>
-      <Wizard />
-    </AgentKeyProvider>
-  );
-}
+export function App() { return <AgentKeyProvider><Wizard /></AgentKeyProvider>; }

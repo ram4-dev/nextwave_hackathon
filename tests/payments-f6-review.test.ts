@@ -30,7 +30,7 @@ import { InMemoryRepository } from '../src/persistence/repository.js';
 import { CeremonyService } from '../src/services/ceremony.js';
 import { ensureSigningKey } from '../src/credentials/jws.js';
 import { DemoKycAdapter } from '../src/kyc/demo.js';
-import { issueSessionToken } from '../src/auth/session.js';
+import { issueHumanSession } from '../src/auth/session.js';
 import { createApp as createYunoMockApp } from '../yuno_mock/src/app.js';
 import { loadMockConfig } from '../yuno_mock/src/config.js';
 import { InMemoryYunoRepository } from '../yuno_mock/src/persistence/memory.js';
@@ -118,8 +118,8 @@ async function enrollFixture(opts?: {
     },
   );
 
-  await ceremony.findOrCreatePrincipal(OWNER);
-  const sessionToken = await issueSessionToken(kyaRepo, platformConfig, OWNER);
+  const human = await ceremony.findOrCreatePrincipal(OWNER);
+  const sessionToken = await issueHumanSession(kyaRepo, platformConfig, human);
   const bound = await runCeremony(ceremony, OWNER);
 
   const start = await platformApp.request('/v1/payment-method-enrollments', {

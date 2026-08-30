@@ -3,6 +3,7 @@
  */
 import { createMiddleware } from 'hono/factory';
 import type { Hono } from 'hono';
+import type { AgentAuthVariables } from '../../auth/dpop.js';
 import type { AppConfig } from '../../config/env.js';
 import { secretsEqual } from '../../crypto/secrets-at-rest.js';
 import type { CredentialClaims } from '../../credentials/jws.js';
@@ -22,9 +23,10 @@ import type { PaymentService } from '../../services/payments/payment-service.js'
 import type { PaymentRuntime } from './runtime.js';
 
 type Variables = {
+  principalId: string;
   address: `0x${string}`;
   agentClaims?: CredentialClaims;
-};
+} & Partial<AgentAuthVariables>;
 
 async function resolvePrincipalId(
   repo: Repository,
