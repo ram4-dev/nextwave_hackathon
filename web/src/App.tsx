@@ -1,11 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AgentKeyProvider,
   generateBrowserAgentKey,
   signChallengeWithHandle,
   useAgentKey,
 } from './AgentKeyProvider';
-import { sendRegisterCalls, siwbConnect } from './baseAccount';
+import {
+  BrowserWalletConnector,
+  formatBrowserWalletError,
+  type RegisterIntent,
+  type WalletOption,
+} from './browserWalletConnector';
+import { formatUnknownError } from './errorMessage.js';
 
 type Step =
   | 'intro'
@@ -22,8 +28,8 @@ interface PublicConfig {
   issuer: string;
   chainIdSepolia: number;
   identityRegistrySepolia: string;
-  siwbDomain?: string;
-  siwbUri?: string;
+  siweDomain?: string;
+  siweUri?: string;
 }
 
 interface EnrollmentStart {
@@ -45,12 +51,22 @@ async function api<T>(
   if (init?.token) headers.set('Authorization', `Bearer ${init.token}`);
   const res = await fetch(path, { ...init, headers });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? res.statusText);
+  if (!res.ok) {
+    const responseError =
+      data && typeof data === 'object' && 'error' in data
+        ? (data as { error?: unknown }).error
+        : data;
+    throw new Error(
+      formatUnknownError(responseError, res.statusText || `Request failed (${res.status})`),
+    );
+  }
   return data as T;
 }
 
 function Wizard() {
   const agentKey = useAgentKey();
+  const walletConnector = useRef<BrowserWalletConnector | null>(null);
+  if (!walletConnector.current) walletConnector.current = new BrowserWalletConnector();
   const [step, setStep] = useState<Step>('intro');
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -64,6 +80,10 @@ function Wizard() {
   const [keystore, setKeystore] = useState<string>('');
   const [kycUrl, setKycUrl] = useState<string | null>(null);
   const [challengeResult, setChallengeResult] = useState<string | null>(null);
+  const [wallets, setWallets] = useState<WalletOption[]>([]);
+  const [selectedWalletId, setSelectedWalletId] = useState('');
+  const [walletAddress, setWalletAddress] = useState<`0x${string}` | null>(null);
+  const [discoveringWallets, setDiscoveringWallets] = useState(false);
 
   const isLive = config?.mode === 'live';
   const push = (msg: string) => setLog((l) => [...l, msg]);
@@ -71,8 +91,61 @@ function Wizard() {
   useEffect(() => {
     api<PublicConfig>('/v1/config')
       .then(setConfig)
-      .catch((e) => setError(String(e.message ?? e)));
+      .catch((e) => setError(formatUnknownError(e)));
   }, []);
+
+  useEffect(() => {
+    const connector = walletConnector.current!;
+    const unsubscribe = connector.subscribe((event) => {
+      if (event.type === 'accountsChanged') {
+        setToken(null);
+        setWalletAddress(null);
+        setError('Wallet account changed. KYC is address-bound; sign in again.');
+        setStep('human');
+      } else if (event.type === 'chainChanged' && event.chainId !== 84532) {
+        setToken(null);
+        setError('Wallet left Base Sepolia. Switch back and sign in again.');
+        setStep('human');
+      } else if (event.type === 'disconnect') {
+        setToken(null);
+        setWalletAddress(null);
+        setError('Browser wallet disconnected. Reconnect and sign in again.');
+        setStep('human');
+      }
+    });
+    return () => {
+      unsubscribe();
+      connector.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isLive && step === 'human' && wallets.length === 0 && !discoveringWallets) {
+      void discoverBrowserWallets();
+    }
+  }, [isLive, step]);
+
+  async function discoverBrowserWallets(): Promise<WalletOption[]> {
+    setDiscoveringWallets(true);
+    setError(null);
+    try {
+      const discovered = await walletConnector.current!.discover();
+      setWallets(discovered);
+      setSelectedWalletId((current) => {
+        if (discovered.some((wallet) => wallet.id === current)) return current;
+        return discovered.length === 1 ? discovered[0]!.id : '';
+      });
+      if (discovered.length === 0) {
+        setError('No EIP-1193 browser wallet found. Install or enable one to continue.');
+      }
+      return discovered;
+    } catch (e) {
+      setError(formatBrowserWalletError(e));
+      return [];
+    } finally {
+      setDiscoveringWallets(false);
+    }
+  }
 
   async function generateAgentKey() {
     setBusy(true);
@@ -96,7 +169,7 @@ function Wizard() {
       );
       setStep('human');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -112,13 +185,13 @@ function Wizard() {
           method: 'POST',
           body: JSON.stringify({
             address: DEMO_ADDRESS,
-            message: `KYA wants you to sign in with your Base account:\nURI: http://localhost:5173\nVersion: 1\nChain ID: 84532\nNonce: DEMO_BYPASS\nIssued At: ${new Date().toISOString()}`,
+            message: `KYA demo browser-wallet sign in:\nURI: http://localhost:5173\nVersion: 1\nChain ID: 84532\nNonce: DEMO_BYPASS\nIssued At: ${new Date().toISOString()}`,
             signature: '0xdemo',
           }),
         },
       );
       setToken(res.token);
-      push(`Demo SIWB session for ${DEMO_ADDRESS} (principal ${res.principalId})`);
+      push(`Demo SIWE session for ${DEMO_ADDRESS} (principal ${res.principalId})`);
       if (!enrollment) throw new Error('Create agent key first');
       const attached = await api<{ needsKyc: boolean; status: string }>(
         `/v1/enrollments/${enrollment.agentUuid}/attach`,
@@ -127,7 +200,7 @@ function Wizard() {
       push(`Attached human; status=${attached.status}; needsKyc=${attached.needsKyc}`);
       setStep(attached.needsKyc ? 'kyc' : 'fingerprint');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -137,22 +210,42 @@ function Wizard() {
     setBusy(true);
     setError(null);
     try {
-      const chainId = config?.chainIdSepolia ?? 84532;
-      const domain = config?.siwbDomain ?? 'localhost';
-      const uri = config?.siwbUri ?? 'http://localhost:5173';
+      if (!enrollment) throw new Error('Create agent key first');
+      let walletId = selectedWalletId;
+      if (!walletId) {
+        const discovered = await discoverBrowserWallets();
+        if (discovered.length !== 1) {
+          throw new Error('Select the browser wallet to use for the whole ceremony.');
+        }
+        walletId = discovered[0]!.id;
+        setSelectedWalletId(walletId);
+      }
+
+      const connector = walletConnector.current!;
+      const connected = await connector.connect(walletId);
+      await connector.ensureBaseSepolia();
+      setWalletAddress(connected.address);
+      push(`Browser wallet connected: ${connected.address}`);
+
+      const domain = config?.siweDomain ?? 'localhost';
+      const uri = config?.siweUri ?? 'http://localhost:5173';
       const { nonce } = await api<{ nonce: string }>('/v1/auth/nonce');
       const issuedAt = new Date().toISOString();
       const expirationTime = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-      push(`SIWB nonce issued; opening Base Account wallet_connect…`);
-      const signed = await siwbConnect({
+      push('SIWE nonce issued; requesting a browser-wallet signature…');
+      const signed = await connector.signSiwe({
         nonce,
-        chainId,
         domain,
         uri,
         issuedAt,
         expirationTime,
       });
-      const res = await api<{ token: string; principalId: string; demo: boolean }>(
+      const res = await api<{
+        token: string;
+        principalId: string;
+        demo: boolean;
+        address: `0x${string}`;
+      }>(
         '/v1/auth/verify',
         {
           method: 'POST',
@@ -164,9 +257,11 @@ function Wizard() {
         },
       );
       if (res.demo) throw new Error('Unexpected demo session in live mode');
+      if (res.address.toLowerCase() !== signed.address.toLowerCase()) {
+        throw new Error('Verified SIWE address does not match the selected wallet');
+      }
       setToken(res.token);
-      push(`Live SIWB session for ${signed.address}`);
-      if (!enrollment) throw new Error('Create agent key first');
+      push(`Live SIWE session for ${signed.address}`);
       const attached = await api<{ needsKyc: boolean; status: string }>(
         `/v1/enrollments/${enrollment.agentUuid}/attach`,
         { method: 'POST', token: res.token, body: '{}' },
@@ -174,7 +269,7 @@ function Wizard() {
       push(`Attached human; status=${attached.status}; needsKyc=${attached.needsKyc}`);
       setStep(attached.needsKyc ? 'kyc' : 'fingerprint');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatBrowserWalletError(e));
     } finally {
       setBusy(false);
     }
@@ -200,7 +295,7 @@ function Wizard() {
       }
       setStep('fingerprint');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -220,7 +315,7 @@ function Wizard() {
       setKycUrl(session.verificationUrl);
       push(`Hosted KYC started via ${session.provider}; complete in provider UI then refresh status`);
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -244,7 +339,7 @@ function Wizard() {
         setStep('fingerprint');
       }
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -263,7 +358,7 @@ function Wizard() {
       push(`Fingerprint approved: ${enrollment.fingerprintDisplay}`);
       setStep('register');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -299,7 +394,7 @@ function Wizard() {
       );
       setStep('challenge');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -310,21 +405,27 @@ function Wizard() {
     setBusy(true);
     setError(null);
     try {
-      const prepared = await api<{
-        mode: string;
-        agentURI: string;
-        sendCalls: Record<string, unknown> | null;
-      }>(`/v1/enrollments/${enrollment.agentUuid}/prepare-register?chainId=84532`, {
+      if (!config) throw new Error('Public configuration is not loaded');
+      const prepared = await api<RegisterIntent>(
+        `/v1/enrollments/${enrollment.agentUuid}/prepare-register?chainId=84532`, {
         method: 'POST',
         token,
         body: '{}',
-      });
-      if (prepared.mode !== 'live' || !prepared.sendCalls) {
-        throw new Error('Expected live sendCalls from prepare-register');
+        },
+      );
+      if (prepared.mode !== 'live' || !prepared.register) {
+        throw new Error('Expected a live direct transaction from prepare-register');
       }
-      push(`Prepared live register URI=${prepared.agentURI}; submitting wallet_sendCalls…`);
-      await sendRegisterCalls(prepared.sendCalls);
-      push('wallet_sendCalls submitted; polling enrollment for Registered binding…');
+      const connector = walletConnector.current!;
+      await connector.ensureBaseSepolia();
+      push(`Prepared register URI=${prepared.agentURI}; simulating exact registry call…`);
+      const transactionHash = await connector.sendRegister(
+        prepared,
+        config.identityRegistrySepolia as `0x${string}`,
+      );
+      push(`Transaction submitted: ${transactionHash}`);
+      const receipt = await connector.waitForReceipt(transactionHash);
+      push(`Transaction confirmed in block ${receipt.blockNumber}; waiting for finalized binding…`);
 
       let bound = false;
       for (let i = 0; i < 30; i++) {
@@ -355,7 +456,7 @@ function Wizard() {
       push(`Credential claimed for agentId=${claimed.agentId}`);
       setStep('challenge');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatBrowserWalletError(e));
     } finally {
       setBusy(false);
     }
@@ -403,7 +504,7 @@ function Wizard() {
       push('Challenge verified with in-memory CryptoKey (not HW-proven by browser WebCrypto)');
       setStep('done');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(formatUnknownError(e));
     } finally {
       setBusy(false);
     }
@@ -425,7 +526,7 @@ function Wizard() {
       <div className="mode-pill">
         {config?.mode === 'demo'
           ? 'Demo mode — labeled mocks / no chain writes'
-          : 'Live mode — Base Sepolia + real SIWB / hosted KYC / wallet_sendCalls'}
+          : 'Live mode — Base Sepolia + browser wallet / SIWE / hosted KYC'}
       </div>
       <h1 className="brand">KYA</h1>
       <p className="tagline">
@@ -446,8 +547,8 @@ function Wizard() {
           <h2>Ceremony</h2>
           <p>
             {isLive
-              ? 'Live path: SIWB nonce + wallet_connect → hosted KYC if needed → fingerprint → wallet_sendCalls register → claim credential → challenge.'
-              : 'Demo path: labeled SIWB bypass → demo KYC → fingerprint → simulated Registered → JWS. Demo steps are explicitly labeled.'}
+              ? 'Live path: browser wallet + SIWE → hosted KYC if needed → fingerprint → direct register transaction → claim credential → challenge.'
+              : 'Demo path: labeled SIWE bypass → demo KYC → fingerprint → simulated Registered → JWS. Demo steps are explicitly labeled.'}
           </p>
           {config && (
             <div className="mono">
@@ -482,10 +583,10 @@ function Wizard() {
 
       {step === 'human' && enrollment && (
         <section className="panel">
-          <h2>2. Human passkey (SIWB)</h2>
+          <h2>2. Browser wallet (SIWE)</h2>
           <p>
             {isLive
-              ? 'Live: fetch SIWB nonce and complete wallet_connect Sign-In with Base.'
+              ? 'Select one injected wallet. The same address signs in, owns the KYC Principal, and submits register(agentURI).'
               : 'Demo: labeled DEMO_BYPASS session (not a real signature).'}
           </p>
           <div className="mono">
@@ -497,15 +598,45 @@ function Wizard() {
           </div>
           <div className="actions">
             {isLive ? (
-              <button type="button" disabled={busy} onClick={liveSignIn}>
-                Sign in with Base (live)
-              </button>
+              <>
+                <label className="wallet-select">
+                  Browser wallet
+                  <select
+                    value={selectedWalletId}
+                    disabled={busy || discoveringWallets || wallets.length === 0}
+                    onChange={(event) => setSelectedWalletId(event.target.value)}
+                  >
+                    <option value="">Select wallet</option>
+                    {wallets.map((wallet) => (
+                      <option key={wallet.id} value={wallet.id}>
+                        {wallet.name}{wallet.rdns ? ` (${wallet.rdns})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={busy || discoveringWallets}
+                  onClick={() => void discoverBrowserWallets()}
+                >
+                  {discoveringWallets ? 'Discovering…' : 'Refresh wallets'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || discoveringWallets || !selectedWalletId}
+                  onClick={liveSignIn}
+                >
+                  Connect wallet &amp; sign in
+                </button>
+              </>
             ) : (
               <button type="button" disabled={busy} onClick={demoSignIn}>
-                Demo Sign in with Base
+                Demo browser-wallet sign in
               </button>
             )}
           </div>
+          {isLive && walletAddress && <div className="mono">Connected: {walletAddress}</div>}
         </section>
       )}
 
@@ -563,13 +694,13 @@ function Wizard() {
           <h2>5. Register on Identity Registry</h2>
           <p>
             {isLive
-              ? 'Live: wallet_sendCalls register(agentURI) from your Base Account, then poll + claim credential. confirm-demo is never called.'
+              ? 'Live: simulate and submit register(agentURI) directly from the authenticated browser wallet. The wallet pays Base Sepolia gas.'
               : 'Demo: confirm simulated Registered event and issue JWS (labeled demo).'}
           </p>
           <div className="actions">
             {isLive ? (
               <button type="button" disabled={busy} onClick={liveRegister}>
-                Submit wallet_sendCalls + claim
+                Submit register transaction + claim
               </button>
             ) : (
               <button type="button" disabled={busy} onClick={confirmDemoRegister}>
