@@ -13,14 +13,16 @@ Retrieval date for all entries: **2026-08-29**. Marked **generated/demo** where 
 | IdentityRegistry Base Mainnet 8453 | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` | Mainnet gate only |
 | Identity Registry `getVersion` (read-only live check 2026-08-29) | Sepolia `0x8004A818…BD9e`: proxy code **130 bytes**, `getVersion()` = **`2.0.0`**. Mainnet `0x8004A169…a432`: proxy code **130 bytes**, `getVersion()` = **`2.0.0`**. No chain writes performed. | `SUPPORTED_IDENTITY_REGISTRY_VERSION`; F5 exact-equality readiness gate |
 | Supported Identity Registry version | **`2.0.0`** (exact match required; non-empty alone fails closed) | `verifyRegistryReady`, `assertRegistryReadyForChain`, mainnet promotion |
-| Base Account overview | https://docs.base.org/sdks/base-account/overview | Live wallet / smart account model |
-| Base Sepolia network/RPC | https://docs.base.org/base-chain/quickstart/connecting-to-base | Chain ID `84532`; official public development RPC `https://sepolia.base.org` (rate-limited, not production) |
-| Authenticate users (SIWB) | https://docs.base.org/base-account/guides/authenticate-users | `auth/siwb.ts`, wizard SIWB flow |
-| `wallet_sendCalls` | https://docs.base.org/base-account/reference/core/provider-rpc-methods/wallet_sendCalls | `buildRegisterSendCalls` |
-| Paymaster capability (ERC-7677) | https://docs.base.org/base-account/reference/core/capabilities/paymasterService | Paymaster proxy + sendCalls capabilities |
+| Base Sepolia network/RPC | https://docs.base.org/get-started/connect-to-base | Chain ID `84532`; official public development RPC `https://sepolia.base.org` (rate-limited, not production) |
+| EIP-1193 provider API | https://eips.ethereum.org/EIPS/eip-1193 | Selected injected provider request API, lifecycle events, and error codes |
+| EIP-6963 provider discovery | https://eips.ethereum.org/EIPS/eip-6963 | Multi-wallet discovery, deduplication, and explicit user selection |
+| ERC-4361 Sign-In with Ethereum | https://eips.ethereum.org/EIPS/eip-4361 | Canonical SIWE message fields and verification contract |
+| EIP-3085 add chain | https://eips.ethereum.org/EIPS/eip-3085 | `wallet_addEthereumChain` Base Sepolia metadata |
+| EIP-3326 switch chain | https://eips.ethereum.org/EIPS/eip-3326 | `wallet_switchEthereumChain` Base Sepolia transition |
+| viem Wallet Client | https://viem.sh/docs/clients/wallet | `custom(selectedProvider)`, message signing, and browser-wallet writes |
 | viem `watchContractEvent` | https://viem.sh/docs/contract/watchContractEvent | `registry/events.ts` |
 | viem `simulateContract` | https://viem.sh/docs/contract/simulateContract | Live registration path guidance |
-| viem `writeContract` | https://viem.sh/docs/contract/writeContract | Contrast: KYA does not write via platform wallet |
+| viem `writeContract` | https://viem.sh/docs/contract/writeContract | Direct write from the authenticated browser wallet after simulation |
 | Didit create session | https://docs.didit.me/sessions-api/create-session | `kyc/didit.ts` createSession |
 | Didit webhooks | https://docs.didit.me/integration/webhooks | `X-Signature-V2` = HMAC-SHA256(canonical sorted Unicode JSON); `X-Signature` = HMAC over exact rawBody; require `X-Timestamp` ±300s; reject `X-Signature-Simple` and undocumented aliases for KYA |
 | Incode backend integrate | https://developer.incode.com/integrate-by-platform/backend/ | `kyc/incode.ts` session start mapping |
@@ -44,12 +46,8 @@ Retrieval date for all entries: **2026-08-29**. Marked **generated/demo** where 
 | Didit status strings | Exact case-sensitive labels from https://docs.didit.me/integration/verification-statuses (2026-08-29): `Not Started`, `In Progress`, `Awaiting User`, `Approved`, `Declined`, `In Review`, `Resubmitted`, `Expired`, `Abandoned`, `Kyc Expired` | `DIDIT_STATUS_MAP` |
 | Veriff status strings | approved / declined / resubmission_requested / … | `VERIFF_STATUS_MAP` |
 | Veriff create-session HMAC | https://devdocs.veriff.com/v1/docs/hmac-authentication-and-endpoint-security (2026-08-29): **POST /v1/sessions is the exception — no X-HMAC-SIGNATURE**; webhooks use `x-hmac-signature` only | `kyc/veriff.ts` |
-| Paymaster capability | High-entropy raw token returned once; store only `tokenHash` + owner/chain/registry/agentURI/expectedCalldata | `src/server/paymaster.ts` |
-| Axios transitive pin | `@coinbase/cdp-sdk@1.55.0` pins `axios@1.16.0` (vulnerable ≤1.17.0). Non-forced `npm audit fix` cannot bump it. Narrow `overrides.axios=1.20.0` (no major `@base-org/account` upgrade) | `package.json` overrides |
-| Paymaster scope residual | Containment binding of registry + register calldata in userOp.callData (not full AA execute decode); provider allowlist still required | docs/IMPLEMENTATION.md |
-| SIWE verify | viem `parseSiweMessage` + `verifySiweMessage` (ERC-6492) | `src/auth/siwb.ts` |
-| wallet_sendCalls `from` | https://docs.base.org/base-account/reference/core/provider-rpc-methods/wallet_sendCalls · `@base-org/account` WalletSendCallsParams | `buildRegisterSendCalls` |
-| COOP header | Base Account popup guidance (same-origin-allow-popups) | `server/app.ts` middleware |
+| SIWE verify | viem `parseSiweMessage` + `verifySiweMessage` | `src/auth/siwe.ts` |
+| Browser-wallet migration rationale | https://github.com/base/account-sdk/issues/363 | Historical evidence for replacing the former provider-specific Base Sepolia path; `BROWSER_WALLET_MIGRATION_SPEC.md` |
 | Credential short TTL default | 900s (product security rule) | `CREDENTIAL_TTL_SECONDS` |
 | Platform signing private key | Live: `KYA_SIGNING_PRIVATE_JWK` or `KYA_SIGNING_KEY_FILE` (secret-backed). Demo: process-local ephemeral. Never persist `d`/`privateJwk` in store.json | `credentials/signer.ts`, `JsonFileRepository` scrub |
 

@@ -116,57 +116,29 @@ export function hashRegisterCall(opts: {
 }
 
 /**
- * Build wallet_sendCalls params for user Base Account.
- * KYA/relayer must NEVER be msg.sender — calls go through the user's smart account.
- * `from` is required by @base-org/account WalletSendCallsParams.
+ * Build the exact direct transaction the authenticated browser wallet submits.
+ * KYA/relayer must NEVER be msg.sender.
  */
-export function buildRegisterSendCalls(opts: {
+export function buildRegisterTransaction(opts: {
   chainId: number;
   registry: `0x${string}`;
   agentURI: string;
-  /** Authenticated smart-account / owner address (checksummed into `from`). */
+  /** Authenticated browser-wallet owner address (checksummed into `from`). */
   from: `0x${string}`;
-  paymasterUrl?: string;
 }): {
-  version: string;
-  chainId: Hex;
-  from: Hex;
-  atomicRequired: boolean;
-  calls: Array<{ to: `0x${string}`; data: Hex; value: Hex }>;
-  capabilities?: {
-    paymasterService?: { url: string };
-  };
+  chainId: number;
+  from: `0x${string}`;
+  to: `0x${string}`;
+  data: Hex;
+  value: '0x0';
 } {
-  const data = encodeRegisterAgentUri(opts.agentURI);
-  const from = getAddress(opts.from);
-  const params: {
-    version: string;
-    chainId: Hex;
-    from: Hex;
-    atomicRequired: boolean;
-    calls: Array<{ to: `0x${string}`; data: Hex; value: Hex }>;
-    capabilities?: {
-      paymasterService?: { url: string };
-    };
-  } = {
-    version: '2.0.0',
-    chainId: `0x${opts.chainId.toString(16)}` as Hex,
-    from,
-    atomicRequired: true,
-    calls: [
-      {
-        to: getAddress(opts.registry),
-        data,
-        value: '0x0',
-      },
-    ],
+  return {
+    chainId: opts.chainId,
+    from: getAddress(opts.from),
+    to: getAddress(opts.registry),
+    data: encodeRegisterAgentUri(opts.agentURI),
+    value: '0x0',
   };
-  if (opts.paymasterUrl) {
-    params.capabilities = {
-      paymasterService: { url: opts.paymasterUrl },
-    };
-  }
-  return params;
 }
 
 export async function verifyRegistryReady(

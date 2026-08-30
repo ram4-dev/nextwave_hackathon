@@ -9,17 +9,12 @@ import type { Repository } from '../persistence/repository.js';
 import { CeremonyService } from '../services/ceremony.js';
 import {
   issueSessionToken,
-  issueSiwbNonce,
+  issueSiweNonce,
   verifySessionToken,
-  verifySiwbLogin,
-} from '../auth/siwb.js';
+  verifySiweLogin,
+} from '../auth/siwe.js';
 import { getJwks, verifyKyaCredential } from '../credentials/jws.js';
 import type { Hex } from 'viem';
-import {
-  assertPaymasterRequestScoped,
-  incrementPaymasterCapabilityUse,
-  lookupPaymasterCapability,
-} from './paymaster.js';
 
 type Variables = {
   address: `0x${string}`;
@@ -39,7 +34,6 @@ export function createApp(repo: Repository, config: AppConfig) {
 
   app.use('*', async (c, next) => {
     await next();
-    c.res.headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     c.res.headers.set('X-Content-Type-Options', 'nosniff');
   });
 
@@ -65,9 +59,9 @@ export function createApp(repo: Repository, config: AppConfig) {
 
   app.get('/.well-known/jwks.json', async (c) => c.json(await getJwks(repo)));
 
-  // --- Auth (SIWB) ---
+  // --- Auth (SIWE) ---
   app.get('/v1/auth/nonce', async (c) => {
-    const nonce = await issueSiwbNonce(repo, config.NONCE_TTL_SECONDS);
+    const nonce = await issueSiweNonce(repo, config.NONCE_TTL_SECONDS);
     return c.json(nonce);
   });
 
@@ -79,12 +73,12 @@ export function createApp(repo: Repository, config: AppConfig) {
     }>();
     if (config.KYA_MODE === 'demo' && body.message.includes('DEMO_BYPASS')) {
       const address = body.address.toLowerCase() as `0x${string}`;
-      await issueSiwbNonce(repo, config.NONCE_TTL_SECONDS);
+      await issueSiweNonce(repo, config.NONCE_TTL_SECONDS);
       const token = await issueSessionToken(repo, config, address);
       const principal = await ceremony.findOrCreatePrincipal(address);
       return c.json({ token, address, principalId: principal.id, demo: true });
     }
-    const { address } = await verifySiwbLogin(repo, config, body);
+    const { address } = await verifySiweLogin(repo, config, body);
     const token = await issueSessionToken(repo, config, address);
     const principal = await ceremony.findOrCreatePrincipal(address);
     return c.json({ token, address, principalId: principal.id, demo: false });
@@ -332,38 +326,6 @@ export function createApp(repo: Repository, config: AppConfig) {
     const body = await c.req.json<{ token: string }>();
     const claims = await verifyKyaCredential(repo, config, body.token);
     return c.json({ ok: true, claims });
-  });
-
-  // --- Paymaster proxy (capability-gated; provider credentials server-only) ---
-  app.all('/v1/paymaster/proxy', async (c) => {
-    if (!config.PAYMASTER_PROXY_ENABLED || !config.PAYMASTER_URL) {
-      return c.json({ error: 'Paymaster proxy disabled' }, 503);
-    }
-    if (c.req.method !== 'POST') {
-      return c.json({ error: 'POST only', code: 'PAYMASTER_METHOD' }, 405);
-    }
-    const rawToken =
-      c.req.query('c') ??
-      c.req.header('x-paymaster-capability') ??
-      undefined;
-    const cap = await lookupPaymasterCapability(repo, rawToken);
-    const rawBody = await c.req.text();
-    assertPaymasterRequestScoped(cap, rawBody);
-    // Count only successfully scoped requests (after validation, before forward).
-    await incrementPaymasterCapabilityUse(repo, cap.tokenHash);
-
-    const res = await fetch(config.PAYMASTER_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: rawBody,
-    });
-    const text = await res.text();
-    return new Response(text, {
-      status: res.status,
-      headers: {
-        'Content-Type': res.headers.get('Content-Type') ?? 'application/json',
-      },
-    });
   });
 
   // --- Principals ---

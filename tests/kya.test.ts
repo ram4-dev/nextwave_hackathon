@@ -23,7 +23,7 @@ import {
   encodeRegisterAgentUri,
   agentRegistryRef,
   IDENTITY_REGISTRY_SEPOLIA,
-  buildRegisterSendCalls,
+  buildRegisterTransaction,
   IDENTITY_REGISTRY_ABI,
 } from '../src/registry/identity.js';
 import { applyTransferEvent, applyRegisteredEvent } from '../src/registry/events.js';
@@ -743,7 +743,7 @@ describe('enrollment transitions + transfer suspension + mainnet gate', () => {
     ).toBe(true);
   });
 
-  it('encodes register(agentURI) and rejects KYA as implicit owner in sendCalls target', () => {
+  it('encodes the exact direct register(agentURI) transaction for the authenticated owner', () => {
     const uri = 'https://kya.example/v1/agents/x/agent-uri.json';
     const data = encodeRegisterAgentUri(uri);
     const decoded = decodeFunctionData({
@@ -753,16 +753,19 @@ describe('enrollment transitions + transfer suspension + mainnet gate', () => {
     expect(decoded.functionName).toBe('register');
     expect(decoded.args?.[0]).toBe(uri);
 
-    const calls = buildRegisterSendCalls({
+    const transaction = buildRegisterTransaction({
       chainId: 84532,
       registry: IDENTITY_REGISTRY_SEPOLIA,
       agentURI: uri,
       from: '0x1111111111111111111111111111111111111111',
-      paymasterUrl: 'http://localhost:8787/v1/paymaster/proxy',
     });
-    expect(calls.calls[0]?.to.toLowerCase()).toBe(IDENTITY_REGISTRY_SEPOLIA.toLowerCase());
-    expect(calls.from).toBe('0x1111111111111111111111111111111111111111');
-    expect(calls.capabilities?.paymasterService?.url).toContain('/v1/paymaster/proxy');
+    expect(transaction).toEqual({
+      chainId: 84532,
+      from: '0x1111111111111111111111111111111111111111',
+      to: IDENTITY_REGISTRY_SEPOLIA,
+      data,
+      value: '0x0',
+    });
   });
 });
 
@@ -1035,7 +1038,7 @@ describe('signing key identity and duplicate-kid recovery', () => {
     const { resetEphemeralSigningKeysForTests } = await import(
       '../src/credentials/signer.js'
     );
-    const { verifySessionToken } = await import('../src/auth/siwb.js');
+    const { verifySessionToken } = await import('../src/auth/siwe.js');
     const { getJwks } = await import('../src/credentials/jws.js');
     const oldPair = await generateKeyPair('ES256', { extractable: true });
     const currentPair = await generateKeyPair('ES256', { extractable: true });
@@ -1080,7 +1083,7 @@ describe('signing key identity and duplicate-kid recovery', () => {
   });
 });
 
-describe('SIWB verification', () => {
+describe('SIWE verification', () => {
   function siweMessage(opts: {
     domain: string;
     address: string;
@@ -1094,7 +1097,7 @@ describe('SIWB verification', () => {
     let msg = `${opts.domain} wants you to sign in with your Ethereum account:
 ${opts.address}
 
-Sign in with Base to KYA.
+Sign in to KYA with your browser wallet.
 
 URI: ${opts.uri}
 Version: 1
@@ -1109,16 +1112,16 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
   it('rejects domain/URI mismatch without consuming nonce; consumes only after valid sig via verifySiweMessage', async () => {
     const repo = new InMemoryRepository();
     const config = testConfig({
-      SIWB_DOMAIN: 'localhost',
-      SIWB_URI: 'http://localhost:5173',
+      SIWE_DOMAIN: 'localhost',
+      SIWE_URI: 'http://localhost:5173',
     });
-    const { issueSiwbNonce, verifySiwbLogin } = await import('../src/auth/siwb.js');
-    const { nonce } = await issueSiwbNonce(repo, 300);
+    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
+    const { nonce } = await issueSiweNonce(repo, 300);
     const address = '0x1111111111111111111111111111111111111111' as const;
     const now = new Date('2026-08-29T18:00:00.000Z');
 
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         {
@@ -1141,7 +1144,7 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
     ).toBeUndefined();
 
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         {
@@ -1168,7 +1171,7 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
     });
 
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         { address, message, signature: '0xbad' },
@@ -1183,7 +1186,7 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
       (await repo.getStore()).nonces.find((n) => n.nonce === nonce)?.consumedAt,
     ).toBeUndefined();
 
-    const ok = await verifySiwbLogin(
+    const ok = await verifySiweLogin(
       repo,
       config,
       { address, message, signature: '0xgood' },
@@ -1198,7 +1201,7 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
     ).toBeTruthy();
 
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         { address, message, signature: '0xgood' },
@@ -1210,17 +1213,50 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
     ).rejects.toThrow(/already used|replay/i);
   });
 
+  it('rejects SIWE messages for every chain except Base Sepolia', async () => {
+    const repo = new InMemoryRepository();
+    const config = testConfig();
+    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
+    const { nonce } = await issueSiweNonce(repo, 300);
+    const address = '0x1111111111111111111111111111111111111111' as const;
+
+    await expect(
+      verifySiweLogin(
+        repo,
+        config,
+        {
+          address,
+          message: siweMessage({
+            domain: 'localhost',
+            address,
+            uri: 'http://localhost:5173',
+            chainId: 8453,
+            nonce,
+          }),
+          signature: '0xgood',
+        },
+        {
+          time: new Date('2026-08-29T18:00:00.000Z'),
+          publicClient: { verifySiweMessage: async () => true },
+        },
+      ),
+    ).rejects.toThrow(/Base Sepolia|chain/i);
+    expect(
+      (await repo.getStore()).nonces.find((record) => record.nonce === nonce)?.consumedAt,
+    ).toBeUndefined();
+  });
+
   it('rejects stale/future issuedAt, notBefore, and expired presentation without burning nonce', async () => {
     const repo = new InMemoryRepository();
     const config = testConfig();
-    const { issueSiwbNonce, verifySiwbLogin } = await import('../src/auth/siwb.js');
+    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
     const address = '0x1111111111111111111111111111111111111111' as const;
     const now = new Date('2026-08-29T18:00:00.000Z');
     const client = { verifySiweMessage: async () => true };
 
-    const { nonce: n1 } = await issueSiwbNonce(repo, 300);
+    const { nonce: n1 } = await issueSiweNonce(repo, 300);
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         {
@@ -1242,9 +1278,9 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
       (await repo.getStore()).nonces.find((n) => n.nonce === n1)?.consumedAt,
     ).toBeUndefined();
 
-    const { nonce: n2 } = await issueSiwbNonce(repo, 300);
+    const { nonce: n2 } = await issueSiweNonce(repo, 300);
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         {
@@ -1263,9 +1299,9 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
       ),
     ).rejects.toThrow(/future|issuedAt/i);
 
-    const { nonce: n3 } = await issueSiwbNonce(repo, 300);
+    const { nonce: n3 } = await issueSiweNonce(repo, 300);
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         {
@@ -1284,9 +1320,9 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
       ),
     ).rejects.toThrow(/not yet valid|notBefore/i);
 
-    const { nonce: n4 } = await issueSiwbNonce(repo, 300);
+    const { nonce: n4 } = await issueSiweNonce(repo, 300);
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         {
@@ -1312,12 +1348,12 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
   it('rejects address mismatch in message vs claimed address', async () => {
     const repo = new InMemoryRepository();
     const config = testConfig();
-    const { issueSiwbNonce, verifySiwbLogin } = await import('../src/auth/siwb.js');
-    const { nonce } = await issueSiwbNonce(repo, 300);
+    const { issueSiweNonce, verifySiweLogin } = await import('../src/auth/siwe.js');
+    const { nonce } = await issueSiweNonce(repo, 300);
     const address = '0x1111111111111111111111111111111111111111' as const;
     const other = '0x2222222222222222222222222222222222222222';
     await expect(
-      verifySiwbLogin(
+      verifySiweLogin(
         repo,
         config,
         {
@@ -1337,26 +1373,6 @@ Issued At: ${opts.issuedAt ?? '2026-08-29T18:00:00.000Z'}`;
         },
       ),
     ).rejects.toThrow(/address/i);
-  });
-});
-
-describe('siwbConnect capability validation', () => {
-  it('rejects wallet_connect responses missing signInWithEthereum capability', () => {
-    function guard(siwe: unknown): void {
-      if (
-        !siwe ||
-        typeof siwe !== 'object' ||
-        ('code' in siwe && !('signature' in siwe)) ||
-        typeof (siwe as { message?: unknown }).message !== 'string' ||
-        typeof (siwe as { signature?: unknown }).signature !== 'string' ||
-        !(siwe as { signature: string }).signature.startsWith('0x')
-      ) {
-        throw new Error('Missing or invalid signInWithEthereum capability');
-      }
-    }
-    expect(() => guard(undefined)).toThrow(/Missing|invalid/i);
-    expect(() => guard({ code: -32000, message: 'rejected' })).toThrow(/Missing|invalid/i);
-    expect(() => guard({ message: 'ok', signature: '0xabc' })).not.toThrow();
   });
 });
 
@@ -1399,239 +1415,13 @@ describe('live KYC demo forbid', () => {
   });
 });
 
-describe('paymaster capability proxy', () => {
-  it('persists only tokenHash; enforces sender/chain/callData scope; rejects mismatches', async () => {
-    const { generateKeyPair, exportJWK } = await import('jose');
-    const { privateKey } = await generateKeyPair('ES256', { extractable: true });
-    const privateJwk = await exportJWK(privateKey);
-    const config = testConfig({
-      KYA_MODE: 'live',
-      BASE_SEPOLIA_RPC_URL: 'https://sepolia.base.org',
-      DIDIT_API_KEY: 'k',
-      DIDIT_WORKFLOW_ID: 'w',
-      DIDIT_WEBHOOK_SECRET: 's',
-      KYA_SIGNING_PRIVATE_JWK: JSON.stringify(privateJwk),
-      PAYMASTER_PROXY_ENABLED: 'true',
-      PAYMASTER_URL: 'https://paymaster.example/rpc',
-      PAYMASTER_CAPABILITY_TTL_SECONDS: '60',
-    });
-    const repo = new InMemoryRepository();
-    const {
-      issuePaymasterCapability,
-      lookupPaymasterCapability,
-      assertPaymasterRequestScoped,
-      hashCapabilityToken,
-      incrementPaymasterCapabilityUse,
-    } = await import('../src/server/paymaster.js');
-    const { encodeRegisterAgentUri } = await import('../src/registry/identity.js');
-    const { createApp } = await import('../src/server/app.js');
-
-    const owner = '0x1111111111111111111111111111111111111111' as const;
-    const agentURI = 'http://localhost:8787/v1/agents/agent_y/agent-uri.json';
-    const registerData = encodeRegisterAgentUri(agentURI);
-
-    await expect(lookupPaymasterCapability(repo, undefined)).rejects.toThrow(/required/i);
-    await expect(lookupPaymasterCapability(repo, 'nope')).rejects.toThrow(/Unknown/i);
-
-    const { rawToken, record } = await issuePaymasterCapability(repo, config, {
-      agentUuid: 'agent_y',
-      chainId: 84532,
-      registry: IDENTITY_REGISTRY_SEPOLIA,
-      agentURI,
-      ownerAddress: owner,
-    });
-    expect(record.tokenHash).toBe(hashCapabilityToken(rawToken));
-    const persisted = JSON.stringify(await repo.getStore());
-    expect(persisted).not.toContain(rawToken);
-    expect(persisted).toContain(record.tokenHash);
-
-    const wrappedCallData =
-      (`0x34fcd5be` + // execute selector placeholder
-        '0'.repeat(24) +
-        IDENTITY_REGISTRY_SEPOLIA.slice(2).toLowerCase() +
-        '0'.repeat(64) +
-        registerData.slice(2)) as `0x${string}`;
-
-    const goodBody = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'pm_getPaymasterData',
-      params: [
-        {
-          sender: owner,
-          nonce: '0x1',
-          callData: wrappedCallData,
-          callGasLimit: '0x0',
-          verificationGasLimit: '0x0',
-          preVerificationGas: '0x0',
-          maxFeePerGas: '0x0',
-          maxPriorityFeePerGas: '0x0',
-        },
-        '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789',
-        '0x14a34',
-        {},
-      ],
-    });
-
-    expect(() => assertPaymasterRequestScoped(record, goodBody)).not.toThrow();
-
-    await expect(async () =>
-      assertPaymasterRequestScoped(
-        record,
-        JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'pm_getPaymasterData',
-          params: [],
-          id: 1,
-        }),
-      ),
-    ).rejects.toThrow(/empty/i);
-
-    const wrongOwnerBody = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'pm_getPaymasterData',
-      params: [
-        {
-          sender: '0x2222222222222222222222222222222222222222',
-          callData: wrappedCallData,
-        },
-        '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789',
-        '0x14a34',
-        {},
-      ],
-    });
-    expect(() => assertPaymasterRequestScoped(record, wrongOwnerBody)).toThrow(/sender/i);
-
-    const malformedSenderBody = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'pm_getPaymasterData',
-      params: [
-        {
-          sender: '0x11111111111111111111111111111111111111', // 38 hex chars — invalid address length
-          callData: wrappedCallData,
-        },
-        '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789',
-        '0x14a34',
-        {},
-      ],
-    });
-    expect(() => assertPaymasterRequestScoped(record, malformedSenderBody)).toThrow(
-      /sender invalid|DomainError/i,
-    );
-    try {
-      assertPaymasterRequestScoped(record, malformedSenderBody);
-      expect.unreachable('expected DomainError');
-    } catch (err) {
-      const { DomainError } = await import('../src/domain/state-machine.js');
-      expect(err).toBeInstanceOf(DomainError);
-      expect((err as InstanceType<typeof DomainError>).code).toBe('PAYMASTER_SENDER');
-    }
-
-    const wrongChainBody = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'pm_getPaymasterData',
-      params: [
-        { sender: owner, callData: wrappedCallData },
-        '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789',
-        '0x2105',
-        {},
-      ],
-    });
-    expect(() => assertPaymasterRequestScoped(record, wrongChainBody)).toThrow(/chainId/i);
-
-    const wrongCallDataBody = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'pm_getPaymasterData',
-      params: [
-        { sender: owner, callData: '0xdeadbeef' },
-        '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789',
-        '0x14a34',
-        {},
-      ],
-    });
-    expect(() => assertPaymasterRequestScoped(record, wrongCallDataBody)).toThrow(/callData/i);
-
-    // Expired
-    await repo.withLock(async (s) => {
-      const c = s.paymasterCapabilities.find((x) => x.tokenHash === record.tokenHash)!;
-      c.expiresAt = new Date(Date.now() - 1000).toISOString();
-    });
-    await expect(lookupPaymasterCapability(repo, rawToken)).rejects.toThrow(/expired/i);
-
-    const fresh = await issuePaymasterCapability(repo, config, {
-      agentUuid: 'agent_z',
-      chainId: 84532,
-      registry: IDENTITY_REGISTRY_SEPOLIA,
-      agentURI,
-      ownerAddress: owner,
-    });
-    const beforeUses = (await repo.getStore()).paymasterCapabilities.find(
-      (c) => c.tokenHash === fresh.record.tokenHash,
-    )!.useCount;
-
-    const { app } = createApp(repo, config);
-    const denied = await app.request('/v1/paymaster/proxy', {
-      method: 'POST',
-      body: goodBody,
-    });
-    expect(denied.status).toBe(400);
-
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }), {
-        status: 200,
-      })) as typeof fetch;
-    try {
-      const ok = await app.request(`/v1/paymaster/proxy?c=${fresh.rawToken}`, {
-        method: 'POST',
-        body: goodBody,
-      });
-      expect(ok.status).toBe(200);
-      const after = (await repo.getStore()).paymasterCapabilities.find(
-        (c) => c.tokenHash === fresh.record.tokenHash,
-      )!;
-      expect(after.useCount).toBe(beforeUses + 1);
-
-      // Failed scope must not increment
-      await incrementPaymasterCapabilityUse(repo, fresh.record.tokenHash);
-      const mid = (await repo.getStore()).paymasterCapabilities.find(
-        (c) => c.tokenHash === fresh.record.tokenHash,
-      )!.useCount;
-      const bad = await app.request(`/v1/paymaster/proxy?c=${fresh.rawToken}`, {
-        method: 'POST',
-        body: wrongOwnerBody,
-      });
-      expect(bad.status).toBe(400);
-      expect(
-        (await repo.getStore()).paymasterCapabilities.find(
-          (c) => c.tokenHash === fresh.record.tokenHash,
-        )!.useCount,
-      ).toBe(mid);
-
-      const malformedHttp = await app.request(`/v1/paymaster/proxy?c=${fresh.rawToken}`, {
-        method: 'POST',
-        body: malformedSenderBody,
-      });
-      expect(malformedHttp.status).toBe(400);
-      const malformedJson = (await malformedHttp.json()) as { code?: string };
-      expect(malformedJson.code).toBe('PAYMASTER_SENDER');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});
-
 describe('enrollment auth + public resolve', () => {
   it('hides enrollment detail without session; resolve has no PII', async () => {
     const repo = new InMemoryRepository();
     const config = testConfig();
     const ceremony = new CeremonyService(repo, config);
     const { createApp } = await import('../src/server/app.js');
-    const { issueSessionToken } = await import('../src/auth/siwb.js');
+    const { issueSessionToken } = await import('../src/auth/siwe.js');
     const { app } = createApp(repo, config);
 
     const key = await crypto.subtle.generateKey(
@@ -1920,6 +1710,73 @@ describe('registry readiness', () => {
       MAINNET_PROMOTION_ENABLED: true,
       MAINNET_REGISTRY_VERIFIED: true,
     })).toEqual([84532, 8453]);
+  });
+});
+
+describe('live direct registration preparation', () => {
+  it('returns only the exact browser-wallet transaction intent', async () => {
+    const { generateKeyPair, exportJWK } = await import('jose');
+    const { privateKey } = await generateKeyPair('ES256', { extractable: true });
+    const privateJwk = await exportJWK(privateKey);
+    const config = testConfig({
+      KYA_MODE: 'live',
+      BASE_SEPOLIA_RPC_URL: 'https://sepolia.base.org',
+      DIDIT_API_KEY: 'k',
+      DIDIT_WORKFLOW_ID: 'w',
+      DIDIT_WEBHOOK_SECRET: 's',
+      KYA_SIGNING_PRIVATE_JWK: JSON.stringify(privateJwk),
+    });
+    const repo = new InMemoryRepository();
+    const owner = '0x1111111111111111111111111111111111111111' as const;
+    await repo.withLock(async (store) => {
+      store.principals.push({
+        id: 'prin_live_register',
+        ownerAddress: owner,
+        kycStatus: 'verified',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      store.enrollments.push({
+        agentUuid: 'agent_live_register',
+        deviceCode: 'LIVE',
+        principalId: 'prin_live_register',
+        status: 'awaiting_register',
+        publicJwk: { kty: 'EC', crv: 'P-256', x: 'a', y: 'b' },
+        thumbprint: 'thumbprint',
+        keystoreProvider: 'encrypted_os_keystore',
+        agentUriPath: '/v1/agents/agent_live_register/agent-uri.json',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+    const ceremony = new CeremonyService(repo, config, {
+      registryReadyClient: {
+        getCode: async () => '0x60016001',
+        readContract: async () => '2.0.0',
+      },
+    });
+
+    const prepared = await ceremony.prepareRegister('agent_live_register', owner, 84532);
+
+    expect(prepared.mode).toBe('live');
+    if (prepared.mode !== 'live') throw new Error('expected live mode');
+    expect(Object.keys(prepared).sort()).toEqual([
+      'agentURI',
+      'callHash',
+      'chainId',
+      'demo',
+      'mode',
+      'note',
+      'register',
+      'registry',
+    ]);
+    expect(prepared.register).toEqual({
+      chainId: 84532,
+      from: owner,
+      to: IDENTITY_REGISTRY_SEPOLIA,
+      data: encodeRegisterAgentUri(prepared.agentURI),
+      value: '0x0',
+    });
   });
 });
 

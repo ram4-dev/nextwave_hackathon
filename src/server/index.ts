@@ -81,9 +81,7 @@ async function main() {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  console.log(
-    `KYA server listening on :${config.PORT} mode=${config.KYA_MODE} (COOP=same-origin-allow-popups)`,
-  );
+  console.log(`KYA server listening on :${config.PORT} mode=${config.KYA_MODE}`);
   serve({ fetch: app.fetch, port: config.PORT });
 }
 

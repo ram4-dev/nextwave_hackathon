@@ -18,16 +18,9 @@ const envSchema = z
     CREDENTIAL_TTL_SECONDS: z.coerce.number().int().positive().default(900),
     CHALLENGE_TTL_SECONDS: z.coerce.number().int().positive().default(120),
     NONCE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
-    /** Paymaster capability TTL (wallet may retry within window). */
-    PAYMASTER_CAPABILITY_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     KYC_TTL_DAYS: z.coerce.number().int().positive().default(365),
     BASE_SEPOLIA_RPC_URL: z.string().url().optional(),
     BASE_MAINNET_RPC_URL: optionalUrl,
-    PAYMASTER_PROXY_ENABLED: z
-      .enum(['true', 'false'])
-      .default('false')
-      .transform((v) => v === 'true'),
-    PAYMASTER_URL: optionalSecret,
     DIDIT_API_KEY: optionalSecret,
     DIDIT_WORKFLOW_ID: optionalSecret,
     DIDIT_WEBHOOK_SECRET: optionalSecret,
@@ -63,8 +56,8 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
-    SIWB_DOMAIN: z.string().default('localhost'),
-    SIWB_URI: z.string().url().default('http://localhost:5173'),
+    SIWE_DOMAIN: z.string().default('localhost'),
+    SIWE_URI: z.string().url().default('http://localhost:5173'),
     /** Live-only: inline ES256 private JWK JSON (secret-backed). Never put demo defaults here. */
     KYA_SIGNING_PRIVATE_JWK: optionalSecret,
     /** Live-only: filesystem path to ES256 private JWK JSON (secret-backed handle). */
@@ -100,13 +93,6 @@ const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ['MAINNET_REGISTRY_VERIFIED'],
         message: 'Mainnet gate requires MAINNET_REGISTRY_VERIFIED=true after address/version check',
-      });
-    }
-    if (data.PAYMASTER_PROXY_ENABLED && !data.PAYMASTER_URL) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['PAYMASTER_URL'],
-        message: 'PAYMASTER_URL required when PAYMASTER_PROXY_ENABLED=true',
       });
     }
   });
@@ -149,10 +135,9 @@ export function publicClientConfig(config: AppConfig) {
     identityRegistrySepolia: config.identityRegistrySepolia,
     identityRegistryMainnet: config.identityRegistryMainnet,
     mainnetPromotionEnabled: config.MAINNET_PROMOTION_ENABLED,
-    paymasterProxyEnabled: config.PAYMASTER_PROXY_ENABLED,
     publicBaseUrl: config.PUBLIC_BASE_URL,
-    siwbDomain: config.SIWB_DOMAIN,
-    siwbUri: config.SIWB_URI,
+    siweDomain: config.SIWE_DOMAIN,
+    siweUri: config.SIWE_URI,
     // Never expose server secrets to the browser.
   };
 }

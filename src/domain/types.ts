@@ -71,7 +71,7 @@ export interface KyaCredentialRecord {
 
 export interface AuthNonce {
   nonce: string;
-  purpose: 'siwb' | 'challenge' | 'enrollment';
+  purpose: 'siwe' | 'challenge' | 'enrollment';
   createdAt: string;
   expiresAt: string;
   consumedAt?: string;
@@ -80,29 +80,6 @@ export interface AuthNonce {
   intentHash?: string;
   /** Exact challenge timestamp issued to the agent (bound into the signed payload). */
   challengeTimestamp?: string;
-}
-
-/**
- * Short-lived paymaster proxy capability metadata (no raw bearer token).
- * Raw capability tokens are high-entropy secrets shown once to the client;
- * only SHA-256(token) is persisted with public scope fields.
- *
- * Scope enforcement checks userOp.sender, chainId, and callData containment of
- * registry + exact register(agentURI) calldata. Full AA execute decoding is not
- * claimed — provider policy must still allowlist the registry.
- */
-export interface PaymasterCapability {
-  tokenHash: string;
-  agentUuid: string;
-  chainId: number;
-  registry: `0x${string}`;
-  ownerAddress: `0x${string}`;
-  agentURI: string;
-  /** Exact IdentityRegistry.register(agentURI) calldata expected inside userOp.callData. */
-  expectedCalldata: `0x${string}`;
-  createdAt: string;
-  expiresAt: string;
-  useCount: number;
 }
 
 export interface KycSessionRecord {
