@@ -72,9 +72,15 @@ describe('MandateAnchor', () => {
 
   it('rejects zero hashes for every evidence field', async () => {
     const { contract, anchorer } = await deploy();
-    const withZero = [...evidence];
-    withZero[2] = '0x'.padEnd(66, '0');
-    await assert.rejects(contract.write.anchor(withZero as typeof evidence, { account: anchorer.account }));
+    for (let index = 0; index < 6; index += 1) {
+      const withZero = [...evidence];
+      withZero[index] = '0x'.padEnd(66, '0');
+      await assert.rejects(
+        contract.write.anchor(withZero as typeof evidence, { account: anchorer.account }),
+        undefined,
+        `expected rejection when evidence[${index}] is zero`,
+      );
+    }
   });
 
   it('rejects constructor when admin equals anchorer', async () => {
