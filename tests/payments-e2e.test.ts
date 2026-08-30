@@ -9,6 +9,7 @@ import { InMemoryRepository } from '../src/persistence/repository.js';
 import { MemoryPaymentRepository } from '../src/persistence/payments/memory.js';
 import { CeremonyService } from '../src/services/ceremony.js';
 import { ensureSigningKey } from '../src/credentials/jws.js';
+import { DemoKycAdapter } from '../src/kyc/demo.js';
 import { issueSessionToken } from '../src/auth/session.js';
 import {
   createPaymentToolAdapter,
@@ -48,10 +49,16 @@ async function runCeremony(ceremony: CeremonyService, owner: `0x${string}`) {
     keystoreProvider: 'encrypted_os_keystore',
   });
   await ceremony.attachHuman(started.agentUuid, owner);
-  await ceremony.completeKyc(owner);
+  const kyc = await ceremony.startKyc(owner);
+  const { rawBody, signature } = DemoKycAdapter.signWebhook({
+    session_id: kyc.sessionId,
+    status: 'verified',
+    event_id: `pay-e2e-${started.agentUuid}`,
+  });
+  await ceremony.handleKycWebhook('demo', { 'x-demo-signature': signature }, rawBody);
   await ceremony.attachHuman(started.agentUuid, owner);
   await ceremony.approveFingerprint(started.agentUuid, owner, started.thumbprint);
-  const bound = await ceremony.bindAgent(started.agentUuid, owner);
+  const bound = await ceremony.confirmDemoRegistration(started.agentUuid, owner);
   return { agentUuid: started.agentUuid, ...bound };
 }
 
@@ -87,7 +94,7 @@ describe('F6 platform payments E2E', () => {
     });
 
     const kyaRepo = new InMemoryRepository();
-    await ensureSigningKey(kyaRepo);
+    await ensureSigningKey(kyaRepo, platformConfig);
     const paymentRepo = new MemoryPaymentRepository();
     const { app: platformApp, ceremony } = createPlatformApp(kyaRepo, platformConfig, {
       repo: paymentRepo,
@@ -414,7 +421,7 @@ describe('F6 platform payments E2E', () => {
       YUNO_ACCOUNT_ID: ACCOUNT_ID,
     });
     const kyaRepo = new InMemoryRepository();
-    await ensureSigningKey(kyaRepo);
+    await ensureSigningKey(kyaRepo, platformConfig);
     const { app: platformApp, ceremony } = createPlatformApp(kyaRepo, platformConfig, {
       repo: new MemoryPaymentRepository(),
       fetchImpl: mockFetch,

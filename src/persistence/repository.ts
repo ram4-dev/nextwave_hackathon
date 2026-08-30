@@ -4,8 +4,11 @@ import path from 'node:path';
 import type {
   AgentEnrollment,
   AuthNonce,
+  EventCursor,
   KyaCredentialRecord,
+  KycSessionRecord,
   Principal,
+  ProcessedEvent,
 } from '../domain/types.js';
 
 export interface KyaStore {
@@ -13,6 +16,9 @@ export interface KyaStore {
   enrollments: AgentEnrollment[];
   credentials: KyaCredentialRecord[];
   nonces: AuthNonce[];
+  kycSessions: KycSessionRecord[];
+  processedEvents: ProcessedEvent[];
+  cursors: EventCursor[];
   /** Public signing key metadata only — never private JWK material. */
   signingKeys: SigningKeyPublicRecord[];
 }
@@ -40,6 +46,9 @@ function emptyStore(): KyaStore {
     enrollments: [],
     credentials: [],
     nonces: [],
+    kycSessions: [],
+    processedEvents: [],
+    cursors: [],
     signingKeys: [],
   };
 }
@@ -73,7 +82,22 @@ export class JsonFileRepository implements Repository {
   async getStore(): Promise<KyaStore> {
     try {
       const raw = await readFile(this.filePath, 'utf8');
-      const parsed = { ...emptyStore(), ...JSON.parse(raw) } as KyaStore;
+      const source = JSON.parse(raw) as Partial<KyaStore>;
+      const parsed: KyaStore = {
+        principals: source.principals ?? [],
+        enrollments: source.enrollments ?? [],
+        credentials: source.credentials ?? [],
+        nonces: source.nonces ?? [],
+        kycSessions: source.kycSessions ?? [],
+        processedEvents: source.processedEvents ?? [],
+        cursors: source.cursors ?? [],
+        signingKeys: source.signingKeys ?? [],
+      };
+      for (const cursor of parsed.cursors) {
+        if (typeof cursor.lastBlock === 'string') {
+          cursor.lastBlock = BigInt(cursor.lastBlock);
+        }
+      }
       return scrubStoreForPersistence(parsed);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -93,7 +117,11 @@ export class JsonFileRepository implements Repository {
     const tmp = `${this.filePath}.${randomUUID()}.tmp`;
     await writeFile(
       tmp,
-      JSON.stringify(scrubbed, null, 2),
+      JSON.stringify(
+        scrubbed,
+        (_key, value) => (typeof value === 'bigint' ? value.toString() : value),
+        2,
+      ),
       'utf8',
     );
     await rename(tmp, this.filePath);
@@ -141,4 +169,12 @@ export class InMemoryRepository implements Repository {
 
 export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`;
+}
+
+export function eventId(
+  chainId: number,
+  txHash: string,
+  logIndex: number,
+): string {
+  return `${chainId}:${txHash.toLowerCase()}:${logIndex}`;
 }

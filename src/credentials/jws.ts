@@ -79,7 +79,7 @@ export async function issueKyaCredential(
     owner: `0x${string}`;
   },
 ): Promise<{ token: string; record: KyaCredentialRecord }> {
-  const key = await ensureSigningKey(repo);
+  const key = await ensureSigningKey(repo, config);
   const now = Math.floor(Date.now() / 1000);
   const jti = newId('cred');
   const exp = now + config.CREDENTIAL_TTL_SECONDS;
@@ -200,6 +200,9 @@ export async function verifyKyaCredential(
   }
   if (record.status === 'revoked') {
     throw new DomainError('Credential revoked', 'JWT_REVOKED');
+  }
+  if (record.status === 'suspended') {
+    throw new DomainError('Credential suspended', 'JWT_SUSPENDED');
   }
   if (record.status === 'expired' || new Date(record.expiresAt).getTime() <= Date.now()) {
     throw new DomainError('Credential expired', 'JWT_EXPIRED');

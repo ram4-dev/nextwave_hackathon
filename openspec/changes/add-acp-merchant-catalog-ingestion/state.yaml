@@ -1,0 +1,77 @@
+change: add-acp-merchant-catalog-ingestion
+artifact_mode: openspec
+delivery_strategy: ask-on-risk
+status: apply_complete
+
+phases:
+  explore: complete
+  propose: complete
+  spec: complete
+  design: complete
+  tasks: complete
+  apply: complete
+  verify: pending
+
+depends_on:
+  - add-juno-catalog-search
+
+source_context:
+  - README.md
+  - FLOW.md
+  - docs/JUNO_CATALOG_SEARCH_SPEC.md
+  - https://developers.openai.com/commerce/specs/api/overview
+  - https://developers.openai.com/commerce/specs/api/feeds
+  - https://developers.openai.com/commerce/specs/api/products
+
+architecture_decisions:
+  ingestion_source: registered_merchants_via_acp
+  persistence: postgres_current_state
+  vector_store: same_postgres_pgvector
+  indexed_unit: acp_variant
+  embedding_update: transactional_outbox_worker
+  hard_data_visibility: synchronous_after_patch_commit
+  searchable_text_visibility: eventual_after_indexing
+  merchant_authorization: manually_provisioned_api_key
+  merchant_login: out_of_scope_for_mvp
+  api_key_storage: hash_only
+  search_path: hnsw_primary_exact_readiness_fallback
+  catalog_version_response: removed
+  revision_model: data_search_index_per_item
+  target_country: AR
+  target_locale: es-AR
+  target_currency: ARS
+  feed_products_pagination: none_acp_full_array
+
+review_defaults:
+  item_identity: feed_product_variant
+  pending_existing_item: keep_last_indexed_document
+  retirement: discontinued_or_available_false
+  acp_url_media: relational_only_not_search_response
+  request_limit_bytes: 1048576
+  products_per_patch: 100
+  variants_per_product: 100
+  timestamp_window_minutes: 5
+
+task_defaults:
+  api_key_rotation_retries_and_rate_limits: configurable
+
+workload_decision:
+  accepted_by_user: size_exception
+  review_budget_risk: high
+  estimated_changed_lines: 2550-2950
+  initial_attempt_bound: 1600_interrupted
+  continuation_attempt: proceed_same_objective_ordinal_2
+  continuation_result: passed_apply_complete
+  requested_reset_bound: not_required_native_continuation
+  continuation_closed_gaps:
+    - catalog_acp_rate_limit_wired
+    - named_revoke_rotate_helpers_and_scripts
+  size_exception:
+    status: accepted_resolved
+    historical_requested_max: 1600
+    historical_forecast: 900-1400
+    measured_apply_implementation: 2828
+    production_sql_scripts: 1964
+    tests: 727
+    required_doc: 137
+    resolved_estimate: 2550-2950

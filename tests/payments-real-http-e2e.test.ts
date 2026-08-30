@@ -16,6 +16,7 @@ import type { PaymentRepository } from '../src/persistence/payments/types.js';
 import { ensureSigningKey } from '../src/credentials/jws.js';
 import { issueSessionToken } from '../src/auth/session.js';
 import { CeremonyService } from '../src/services/ceremony.js';
+import { DemoKycAdapter } from '../src/kyc/demo.js';
 import type { AuthorizationVerifier } from '../src/domain/authorization/verifier.js';
 import {
   createPaymentToolAdapter,
@@ -146,10 +147,16 @@ async function runCeremony(ceremony: CeremonyService, owner: `0x${string}`) {
     keystoreProvider: 'encrypted_os_keystore',
   });
   await ceremony.attachHuman(started.agentUuid, owner);
-  await ceremony.completeKyc(owner);
+  const kyc = await ceremony.startKyc(owner);
+  const { rawBody, signature } = DemoKycAdapter.signWebhook({
+    session_id: kyc.sessionId,
+    status: 'verified',
+    event_id: `pay-real-${started.agentUuid}`,
+  });
+  await ceremony.handleKycWebhook('demo', { 'x-demo-signature': signature }, rawBody);
   await ceremony.attachHuman(started.agentUuid, owner);
   await ceremony.approveFingerprint(started.agentUuid, owner, started.thumbprint);
-  const bound = await ceremony.bindAgent(started.agentUuid, owner);
+  const bound = await ceremony.confirmDemoRegistration(started.agentUuid, owner);
   return { agentUuid: started.agentUuid, ...bound };
 }
 
@@ -276,7 +283,7 @@ async function startHarness(opts?: {
     PAYMENT_INTERNAL_API_KEY: 'payment_internal_test_key',
   });
   const kyaRepo = new InMemoryRepository();
-  await ensureSigningKey(kyaRepo);
+  await ensureSigningKey(kyaRepo, platformConfig);
 
   // Default real fetch against mock — no fetchImpl on platform runtime.
   const { app: platformApp, ceremony, payment } = createPlatformApp(

@@ -1,29 +1,38 @@
-# FLOW — Autenticación KYA y descubrimiento de catálogo Juno
+# FLOW — Autenticación KYA y descubrimiento de catálogo de merchants
 
-> **Nota de alcance:** este documento describe el **diseño objetivo** del producto. El build actual en este repositorio implementa la ceremonia de identidad **completamente mockeada** para demo (sin wallet real, sin SIWE, sin proveedor KYC externo, sin escritura on-chain — ver [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) para lo que existe hoy). Todo lo marcado abajo como "diseño objetivo" o "planificado" **no** está implementado en este build.
+> **Nota de alcance:** ver [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) para el estado actual. Este documento describe el flujo de producto. `KYA_MODE=demo` ejercita la ceremonia con stubs etiquetados; `KYA_MODE=live` cablea wallet/SIWE, KYC hospedado y registry (CI no ejecuta KYC real ni writes públicos). Pagos F0–F7 viven en la plataforma + `yuno_mock` (sandbox live Yuno: LIVE-NOT-EXECUTED).
 
 ## Decisión ejecutiva
 
 **KYC es solo para personas** y, en condiciones normales, **se hace una sola vez**. La persona autoriza uno o más agentes compradores locales que corren en su PC. La plataforma KYA vincula un **Principal ID** seudónimo verificado a un **Agent ID ERC-8004** y a la **clave pública local** del agente.
 
-En el diseño objetivo (live, no implementado en este build), la única conexión de
-wallet sería **`BrowserWalletConnector`**: descubre providers inyectados, autentica
-con SIWE y envía directamente `register(agentURI)` desde la misma dirección
-verificada, sin abstracción de cuenta ni sponsorship de gas. En este build, el
-sign-in y el register son pasos mockeados y etiquetados como tales.
+La única conexión de wallet del MVP live es **`BrowserWalletConnector`**: descubre
+providers inyectados, autentica con SIWE y envía directamente
+`register(agentURI)` desde la misma dirección verificada. No hay abstracción de
+cuenta ni sponsorship de gas; el usuario paga gas de Base Sepolia.
 
-La siguiente capacidad planificada usa esa identidad para que un agente comprador
-consulte, en lenguaje natural, un catálogo agregado de comercios que aceptan
-**Juno** como proveedor o método de pago. El primer alcance usa una **API mock de
-Juno**, datos sintéticos y un índice vectorial generado offline. No conecta con
-Juno real ni ejecuta compras o pagos.
+La búsqueda de catálogo queda separada de identidad y auth en este slice:
+un agente consumidor consulta, en lenguaje natural, un catálogo de comercios
+que aceptan **Juno** como proveedor o método de pago. El primer alcance usa un
+**dataset mock de Juno** (10 ofertas ARS en español, varios merchants de
+Argentina) cargado offline en PostgreSQL y un índice vectorial derivado. No
+conecta con Juno real ni ejecuta checkout de catálogo.
 
-| Implementado hoy (mock) | Diseño objetivo / planificado | Fuera de alcance |
+**Dirección de arquitectura aprobada:** Juno no será la fuente runtime del
+catálogo. Cada merchant registrado mantiene su feed mediante las rutas ACP de
+Feeds y Products. El catálogo relacional usa estado actual incremental por feed
+y un worker deriva embeddings desde una outbox transaccional. La búsqueda
+HNSW/lexical y la hidratación SQL se conservan.
+
+Los pagos de plataforma (F0–F7) son ortogonales al catálogo: API provider-agnostic
+en el Hono raíz, mock REST independiente (`yuno_mock`) y swap-readiness F7 offline.
+
+| Implementado hoy | Extensión de catálogo / pagos | Fuera de alcance |
 | --- | --- | --- |
-| Ceremonia de identidad end-to-end mockeada (persona ↔ agente local ↔ KYA) | Wallet real + SIWE; KYC hospedado real; `register` on-chain real | Integración con la API real de Juno |
-| Enrollment, credencial KYA real (JWS ES256), autenticación challenge del agente | API mock de comercios y productos Juno | Checkout, captura, pago y liquidación |
-| Clave local P-256 real (WebCrypto), nunca sale del dispositivo | Pipeline offline de normalización e indexación vectorial; búsqueda semántica | AP2 y otros protocolos de pago |
-| Referencia display-only al Identity Registry curated (sin lectura/escritura on-chain) | Consumo real del Identity Registry curated | Deploy de registry propio; Hardhat/Foundry en runtime |
+| Ceremonia de identidad (persona ↔ agente local ↔ KYA; demo + live wiring) | Dataset mock de comercios y productos Juno | Integración con la API real de Juno (catálogo) |
+| Enrollment, credencial KYA, autenticación del agente | Pipeline offline de normalización e indexación vectorial | AP2 y otros protocolos de pago |
+| Binding Principal ID + ERC-8004 + clave local | Búsqueda semántica de productos entre merchants | Deploy de registry propio; Hardhat/Foundry en runtime |
+| Consumo del Identity Registry curated | Pagos F0–F7 (platform + yuno_mock; sandbox live LIVE-NOT-EXECUTED) | Liquidación on-chain de pagos |
 
 **Actores de la ceremonia (4):** Usuario · Agente local · Plataforma KYA · Proveedor KYC.  
 ERC-8004 es **infraestructura interna** de Plataforma KYA, no un quinto actor de negocio.
@@ -68,15 +77,15 @@ sequenceDiagram
 
 ---
 
-## Flujo planificado: búsqueda de productos con Juno mock
+## Flujo implementado: búsqueda de productos con Juno mock
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant JM as API mock de Juno
+  participant JM as Dataset mock de Juno
   participant P as Pipeline offline
-  participant C as Catálogo normalizado
-  participant V as Índice vectorial
+  participant C as Datos duros SQL
+  participant V as Proyección de búsqueda pgvector
   participant A as Agente comprador
   participant S as API de búsqueda
 
@@ -84,45 +93,50 @@ sequenceDiagram
   JM-->>P: Comercios + aceptación Juno + catálogo + versión
   P->>P: Valida, normaliza, deduplica y detecta bajas
   P->>C: Publica snapshot estructurado versionado
-  P->>V: Publica embeddings por oferta + metadata exacta
-  A->>S: Credencial KYA + query "papas fritas" + filtros opcionales
-  S->>V: Vectoriza query y recupera top-k candidatos
+  P->>V: Publica item_id + nombre + descripción + item_info + embedding
+  A->>S: query "papas fritas" + filtros opcionales
+  S->>V: Vectoriza query y recupera candidate_k IDs
   V-->>S: IDs de ofertas + relevancia
-  S->>C: Rehidrata precio, moneda, disponibilidad y merchant
+  S->>C: Rehidrata en lote por item_id
   C-->>S: Datos exactos de la versión publicada
   S-->>A: Resultados rankeados + updated_at + catalog_version
 ```
 
-### Contrato conceptual de la API mock de Juno
+### Contrato de datos del mock de Juno
 
-La API define el contrato sintético que consumirá el MVP en lugar de una
-integración real con Juno. Las rutas exactas se definirán al implementar, pero
-el mock debe ofrecer estas capacidades:
+El dataset define el contrato sintético que consumirá el MVP en lugar de una
+integración real con Juno. En este slice se carga offline y no agrega rutas HTTP
+para listar o modificar merchants:
 
 | Recurso | Datos mínimos |
 | --- | --- |
 | Merchant | `merchant_id`, nombre, categoría, ubicación y `payment_methods` con Juno explícito |
-| Producto | `product_id`, `merchant_id`, nombre, descripción, categoría y etiquetas |
+| Producto | `item_id`, `merchant_id`, nombre, descripción, categoría y etiquetas |
 | Oferta | precio, moneda, disponibilidad y referencia al producto/merchant |
 | Snapshot | `catalog_version`, `updated_at`, paginación y bajas desde la versión anterior |
 
-El mock debe permitir listar merchants, obtener el detalle de un merchant y
-paginar sus productos/ofertas. Todos los datos son sintéticos: no requiere
-credenciales reales de Juno ni representa disponibilidad comercial real.
+Todos los datos son sintéticos: no requiere credenciales reales de Juno ni
+representa disponibilidad comercial real.
 
 ### Pipeline offline e índice vectorial
 
 1. Descarga un snapshot completo o los cambios posteriores a una versión.
 2. Valida el esquema, normaliza categorías/monedas y deduplica IDs canónicos.
 3. Guarda el catálogo estructurado como fuente de verdad.
-4. Construye un documento de búsqueda por oferta combinando nombre, descripción,
-   categoría, etiquetas y contexto del merchant.
-5. Genera embeddings y publica una nueva versión del índice de forma atómica.
+4. Construye una proyección de búsqueda mínima por oferta: `item_id`, nombre,
+   descripción e `item_info` textual.
+5. Genera el embedding de esa proyección y publica la nueva versión de forma
+   atómica.
 6. Elimina o marca como no disponibles las ofertas ausentes o dadas de baja.
 
-El pipeline corre fuera del request de búsqueda, es repetible e idempotente. El
-índice vectorial es derivado y reconstruible; no sustituye al catálogo
-estructurado ni se usa como fuente de precio o disponibilidad.
+El pipeline corre fuera del request de búsqueda, es repetible e idempotente.
+PostgreSQL y pgvector no son dos bases separadas: la proyección vectorial y los
+datos duros viven en tablas con responsabilidades distintas dentro del mismo
+PostgreSQL. El índice HNSW se mantiene al cambiar las filas vectoriales, pero el
+pipeline sigue siendo responsable de generar los embeddings. La búsqueda
+recupera candidatos por `item_id` y después rehidrata precio, moneda,
+disponibilidad y merchant desde SQL en una sola operación por lote, nunca con
+una consulta por resultado.
 
 ### Contrato de búsqueda para agentes
 
@@ -131,14 +145,18 @@ estructurado ni se usa como fuente de precio o disponibilidad.
 | `query` libre, por ejemplo `papas fritas` | Merchant y producto/oferta canónicos |
 | `top_k` opcional | Precio y moneda exactos |
 | Filtros opcionales de merchant, categoría, moneda, precio o disponibilidad | Disponibilidad y aceptación de Juno |
-| Credencial KYA del agente | Relevancia, `updated_at` y `catalog_version` |
 
-La relevancia semántica sirve para recuperar candidatos; los filtros exactos se
-aplican sobre metadata estructurada. La respuesta nunca inventa productos,
-precios o stock que no existan en el último snapshot publicado.
+La única superficie HTTP del catálogo será `POST /v1/catalog/search`. En este
+slice es pública: no requiere KYC, sesión ni credencial KYA. La autenticación se
+resolverá después como middleware sin cambiar la lógica interna de búsqueda.
+
+La relevancia semántica sirve para recuperar candidatos por `item_id`; los
+filtros y datos duros se resuelven contra el snapshot SQL de la misma versión.
+La respuesta nunca inventa productos, precios o stock que no existan en el
+último snapshot publicado ni entrega un candidato sin su fila relacional.
 
 Ejemplo esperado: `papas fritas` puede recuperar ofertas llamadas “Papas
-clásicas”, “French fries” o productos equivalentes por significado, y devolver
+clásicas”, “Bastones de papa” o productos equivalentes por significado, y devolver
 cada resultado con el merchant que lo vende y su precio vigente en el snapshot.
 
 ---
@@ -150,19 +168,67 @@ cada resultado con el merchant que lo vende y su precio vigente en el snapshot.
 - Vincular persona verificada (Principal ID) ↔ Agent ID ERC-8004 ↔ clave pública local.
 - Enrollment, rotación, revocación y autenticación challenge-response del agente ante Plataforma KYA.
 - Consumir el **Identity Registry curated** ya desplegado y su ABI oficial.
-- Planificar una API mock con merchants que aceptan Juno y sus productos, precios y disponibilidad.
-- Planificar un pipeline offline que normaliza el catálogo y publica un índice vectorial versionado.
-- Permitir que un agente autenticado recupere ofertas relevantes mediante una query libre.
+- Cargar un dataset mock con merchants que aceptan Juno y sus productos, precios y disponibilidad.
+- Ejecutar un pipeline offline que normaliza el catálogo y publica un índice vectorial versionado.
+- Permitir que un agente consumidor recupere ofertas relevantes mediante una query libre.
 
 ### No-objetivos
 - Integración con Juno real o datos comerciales reales en esta fase.
-- Onboarding u operación interna de merchants.
+- Portal de onboarding, login o autoservicio para merchants; el alta y la
+  entrega de API keys serán manuales en el MVP.
 - Checkout, creación de órdenes, captura de pago o liquidación.
 - AP2 u otros protocolos de pago.
 - Crawling o embeddings en tiempo real dentro del request de búsqueda.
+- KYC, autenticación o autorización del endpoint de búsqueda en este slice.
 - Reputation Registry / Validation Registry de ERC-8004.
 - Desplegar un registry ERC-8004 propio (Hardhat/Foundry **no** están en el path de runtime).
 - Almacenar documentos KYC, biometría o PII en cadena o en `agentURI`.
+
+## Arquitectura objetivo: ingesta ACP mantenida por merchants
+
+> **Implementada en este worktree.** La fixture Juno queda como seed/test; el
+> runtime usa feeds ACP current-state y la búsqueda posterior a la indexación
+> se mantiene.
+
+```mermaid
+sequenceDiagram
+  participant M as Merchant registrado
+  participant API as API ACP
+  participant DB as PostgreSQL + pgvector
+  participant W as Worker de embeddings
+  participant A as Agente consumidor
+
+  M->>API: PATCH /product_feeds/{feed_id}/products
+  API->>API: API key Bearer + ownership + idempotencia
+  API->>DB: Merge + data_revision/search_revision + precio/stock + outbox
+  API-->>M: 200 accepted
+  W->>DB: Claim outbox + embedding local + upsert de proyección
+  A->>API: POST /v1/catalog/search
+  API->>DB: HNSW/lexical + hidratación SQL actual
+  API-->>A: Resultados + data/search/index revisions; sin catalog_version
+```
+
+Reglas centrales:
+
+- Un Variant ACP es el item vendible, identificado internamente por
+  `feed_id + product_id + variant_id`.
+- El PATCH es parcial: campos y productos omitidos permanecen sin cambios.
+- El MVP acepta sólo `target_country=AR`, contenido español y precios `ARS`.
+- Precio y stock son visibles al commit; el embedding se actualiza de forma
+  eventual y nunca bloquea una actualización comercial válida.
+- `discontinued` o `available=false` oculta inmediatamente el item.
+- Cada merchant se da de alta manualmente y recibe una API key opaca que se
+  muestra una sola vez; se persiste sólo su hash, estado y asociación al
+  `merchant_id`. Revocación y rotación son comandos administrativos manuales
+  (`catalog:revoke`, `catalog:rotate`). No hay login, portal, OAuth ni KYC de
+  merchants en el MVP.
+- El ownership se deriva de la API key y la asociación feed→merchant. No se
+  toma de `seller`, no usa KYA/KyaStore y falla cerrado ante una key inválida,
+  revocada o un feed ajeno.
+- URL/media se conservan fuera de la proyección; promociones y checkout siguen
+  fuera de alcance.
+
+Detalle: [`docs/ACP_MERCHANT_CATALOG_INGESTION.md`](./docs/ACP_MERCHANT_CATALOG_INGESTION.md).
 
 ---
 
@@ -378,13 +444,17 @@ Credencial **copiada es inútil** sin la clave privada local.
 | **F4** | Rotación/revocación/device loss + Incode (CO) + Veriff fallback |
 | **F5** | Gate dirección/versión → Base Mainnet (sigue sin deploy propio) |
 
-### Extensión de catálogo Juno (planificada; sin código todavía)
+### Extensión de catálogo Juno (implementada en este worktree)
+
+Spec técnica: [`docs/JUNO_CATALOG_SEARCH_SPEC.md`](./docs/JUNO_CATALOG_SEARCH_SPEC.md).
 
 | Fase | Entrega |
 | --- | --- |
-| **J0** | Contrato de datos + API mock paginada para merchants, productos, ofertas y versiones de catálogo |
-| **J1** | Pipeline offline idempotente + catálogo normalizado + publicación atómica del índice vectorial |
-| **J2** | API de búsqueda para agentes + filtros exactos + ranking semántico + demo con queries como `papas fritas` |
+| **J0** | PostgreSQL + contrato/dataset sintético de merchants, productos, ofertas y versiones de catálogo |
+| **J1** | Pipeline offline idempotente + catálogo normalizado + publicación atómica de índices HNSW/GIN |
+| **J2** | `POST /v1/catalog/search` público + filtros exactos + ranking semántico/lexical + demo con `papas fritas` |
+| **J3** | **Specified:** Feeds/Products ACP + merge parcial/idempotente por merchant, sin Juno runtime |
+| **J4** | **Specified:** outbox/worker de embeddings + revisiones observables + cutover incremental |
 
 ---
 
@@ -407,16 +477,32 @@ Credencial **copiada es inútil** sin la clave privada local.
 - [ ] La extensión de catálogo no acopla el núcleo de identidad KYA a checkout o pagos.
 - [ ] Direcciones curated reverificadas antes de integrar/promover.
 
-### Extensión de catálogo Juno (planificada)
+### Extensión de catálogo Juno (implementada)
 
-- [ ] El mock expone solo datos sintéticos y marca explícitamente qué merchants aceptan Juno.
-- [ ] Cada oferta tiene IDs canónicos, merchant, producto, precio, moneda, disponibilidad y `updated_at`.
-- [ ] El pipeline offline es paginado, idempotente, versionado y procesa altas, cambios y bajas.
-- [ ] El catálogo estructurado es la fuente de verdad; embeddings e índice vectorial son derivados y reconstruibles.
-- [ ] Una query como `papas fritas` devuelve productos semánticamente relevantes entre múltiples merchants.
-- [ ] Precio, moneda y disponibilidad provienen del snapshot publicado, no de texto generado.
-- [ ] Cada respuesta incluye relevancia y frescura (`updated_at` + `catalog_version`).
-- [ ] Buscar no crea una orden ni autoriza o ejecuta un pago.
+- [x] El mock expone solo datos sintéticos y marca explícitamente qué merchants aceptan Juno.
+- [x] Cada oferta tiene IDs canónicos, merchant, producto, precio, moneda, disponibilidad y `updated_at`.
+- [x] El pipeline offline es idempotente, versionado y publica snapshots atómicos; la paginación queda para un feed real futuro.
+- [x] La proyección vectorial guarda solo `item_id`, nombre, descripción, `item_info` y embedding; los datos duros se rehidratan en lote desde SQL.
+- [x] HNSW es el camino principal; búsqueda exacta es fallback observable por readiness explícito y baseline de tests.
+- [x] Una query como `papas fritas` devuelve productos semánticamente relevantes entre múltiples merchants.
+- [x] Precio, moneda y disponibilidad provienen del snapshot publicado, no de texto generado.
+- [x] Cada respuesta incluye relevancia y frescura (`updated_at` + revisiones por item).
+- [x] La única ruta pública de búsqueda es `POST /v1/catalog/search` y funciona sin auth/KYC.
+- [x] Buscar no crea una orden ni autoriza o ejecuta un pago.
+
+### Ingesta ACP de merchants (implementada)
+
+- [x] Los merchants registrados crean/leen feeds y hacen PATCH parcial de productos según ACP.
+- [x] El alta es manual: cada merchant recibe una API key Bearer mostrada una sola vez, sin login ni portal.
+- [x] Sólo se guarda el hash de la key; una key desconocida/revocada o un feed ajeno falla cerrado y nunca se registra el secreto.
+- [x] La ingesta es idempotente y su autorización permanece separada de KYA.
+- [x] POST feed responde `200`; GET products devuelve el array completo para el volumen MVP.
+- [x] Precio y stock se reflejan en SQL sin esperar embeddings.
+- [x] Una outbox durable reindexa sólo items con texto searchable modificado.
+- [x] La búsqueda elimina `catalog_version` y devuelve `data_revision`, `search_revision` e `index_revision` por item.
+- [x] Sólo feeds AR, contenido español y precios ARS son elegibles.
+- [x] La búsqueda conserva HNSW, fallback exacto e hidratación SQL en lote.
+- [x] La fixture Juno queda únicamente como seed/test y deja de ser fuente runtime.
 
 ---
 
@@ -451,4 +537,4 @@ Credencial **copiada es inútil** sin la clave privada local.
 
 ---
 
-*Documento autocontenido de arquitectura. KYA cubre identidad y autenticación; la extensión planificada de Juno cubre descubrimiento de catálogo con datos sintéticos. Checkout, ejecución de pagos, liquidación y AP2 permanecen fuera de alcance.*
+*Documento autocontenido de arquitectura. KYA cubre identidad y autenticación; la búsqueda mock implementada demuestra descubrimiento y la arquitectura ACP especificada traslada la fuente de catálogo a los merchants. Checkout, ejecución de pagos, liquidación y AP2 permanecen fuera de alcance.*

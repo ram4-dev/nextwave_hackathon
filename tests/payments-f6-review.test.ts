@@ -29,6 +29,7 @@ import { loadConfig } from '../src/config/env.js';
 import { InMemoryRepository } from '../src/persistence/repository.js';
 import { CeremonyService } from '../src/services/ceremony.js';
 import { ensureSigningKey } from '../src/credentials/jws.js';
+import { DemoKycAdapter } from '../src/kyc/demo.js';
 import { issueSessionToken } from '../src/auth/session.js';
 import { createApp as createYunoMockApp } from '../yuno_mock/src/app.js';
 import { loadMockConfig } from '../yuno_mock/src/config.js';
@@ -52,10 +53,16 @@ async function runCeremony(ceremony: CeremonyService, owner: `0x${string}`) {
     keystoreProvider: 'encrypted_os_keystore',
   });
   await ceremony.attachHuman(started.agentUuid, owner);
-  await ceremony.completeKyc(owner);
+  const kyc = await ceremony.startKyc(owner);
+  const { rawBody, signature } = DemoKycAdapter.signWebhook({
+    session_id: kyc.sessionId,
+    status: 'verified',
+    event_id: `pay-f6-${started.agentUuid}`,
+  });
+  await ceremony.handleKycWebhook('demo', { 'x-demo-signature': signature }, rawBody);
   await ceremony.attachHuman(started.agentUuid, owner);
   await ceremony.approveFingerprint(started.agentUuid, owner, started.thumbprint);
-  const bound = await ceremony.bindAgent(started.agentUuid, owner);
+  const bound = await ceremony.confirmDemoRegistration(started.agentUuid, owner);
   return { agentUuid: started.agentUuid, ...bound };
 }
 
@@ -98,7 +105,7 @@ async function enrollFixture(opts?: {
     PAYMENT_INTERNAL_API_KEY: 'payment_internal_test_key',
   });
   const kyaRepo = new InMemoryRepository();
-  await ensureSigningKey(kyaRepo);
+  await ensureSigningKey(kyaRepo, platformConfig);
   const paymentRepo = new MemoryPaymentRepository();
   const { app: platformApp, ceremony, payment } = createPlatformApp(
     kyaRepo,
