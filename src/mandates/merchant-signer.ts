@@ -4,6 +4,8 @@ import type { CheckoutSnapshot, MerchantSigner } from './types.js';
 
 const audience = 'ap2.checkout';
 const allowedLocalEnvs = new Set(['development', 'test']);
+/** Explicit small clock skew for local merchant JWT verification (milliseconds). */
+export const MERCHANT_CLOCK_SKEW_MS = 5_000;
 
 function resolveNodeEnv(explicit?: string): string {
   if (explicit !== undefined) return explicit;
@@ -15,6 +17,9 @@ export async function createLocalMerchantSigner(input: {
   issuer: string;
   /** Explicit environment override. When omitted, process.env.NODE_ENV must be set to development/test. */
   nodeEnv?: string;
+  /** Injectable clock for tests. Real development/test CLI uses wall clock unless overridden. */
+  now?: () => Date;
+  clockSkewMs?: number;
 }): Promise<MerchantSigner> {
   const nodeEnv = resolveNodeEnv(input.nodeEnv);
   if (!allowedLocalEnvs.has(nodeEnv)) {
@@ -36,6 +41,11 @@ export async function createLocalMerchantSigner(input: {
   const publicKey = await importJWK(publicJwk, 'ES256');
   const configuredKid = (privateJwk as JsonWebKey & { kid?: unknown }).kid;
   const kid = typeof configuredKid === 'string' && configuredKid ? configuredKid : 'merchant-local';
+  const clock = input.now ?? (() => new Date());
+  const clockSkewMs = input.clockSkewMs ?? MERCHANT_CLOCK_SKEW_MS;
+  if (!Number.isSafeInteger(clockSkewMs) || clockSkewMs < 0) {
+    throw new DomainError('clockSkewMs must be a non-negative integer', 'MERCHANT_SIGNER_CONFIG');
+  }
 
   return {
     issuer: input.issuer,
@@ -55,12 +65,14 @@ export async function createLocalMerchantSigner(input: {
     },
     async verifyCheckout(jwt) {
       try {
+        const now = clock();
         const { payload, protectedHeader } = await jwtVerify(jwt, publicKey, {
           issuer: input.issuer,
           audience,
           algorithms: ['ES256'],
-          clockTolerance: 0,
+          clockTolerance: Math.floor(clockSkewMs / 1000),
           typ: 'JWT',
+          currentDate: now,
         });
         if (protectedHeader.alg !== 'ES256') throw new Error('Unexpected JWT algorithm');
         if (protectedHeader.typ !== 'JWT') throw new Error('Unexpected JWT typ');
@@ -72,6 +84,9 @@ export async function createLocalMerchantSigner(input: {
         if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number' || payload.exp <= payload.iat) {
           throw new Error('Unexpected JWT iat/exp');
         }
+        if (payload.iat * 1000 > now.getTime() + clockSkewMs) {
+          throw new Error('Checkout JWT iat is in the future');
+        }
         const snapshot = payload as unknown as CheckoutSnapshot;
         if (typeof snapshot.issuedAt !== 'string' || typeof snapshot.expiresAt !== 'string') {
           throw new Error('Checkout issuedAt/expiresAt missing');
@@ -81,7 +96,7 @@ export async function createLocalMerchantSigner(input: {
         if (payload.iat !== expectedIat || payload.exp !== expectedExp) {
           throw new Error('JWT iat/exp diverge from checkout issuedAt/expiresAt');
         }
-        if (expectedExp * 1000 <= Date.now()) throw new Error('Checkout JWT expired by schema timestamps');
+        if (expectedExp * 1000 <= now.getTime()) throw new Error('Checkout JWT expired by schema timestamps');
         return snapshot;
       } catch (error) {
         throw new DomainError(`Checkout JWT verification failed: ${(error as Error).message}`, 'CHECKOUT_JWT');

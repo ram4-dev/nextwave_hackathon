@@ -12,6 +12,22 @@ type ReplayState = {
 
 const emptyState = (): ReplayState => ({ nonces: {}, checkoutDrafts: {}, paymentDrafts: {} });
 
+function assertCheckoutRecord(record: StoredCheckoutDraft): StoredCheckoutDraft {
+  if (
+    !record.transactionId
+    || !record.checkoutHash
+    || !record.payloadHash
+    || !record.sub
+    || !record.aud
+    || !Number.isFinite(record.iat)
+    || !Number.isFinite(record.exp)
+    || record.exp <= record.iat
+  ) {
+    throw new DomainError('Invalid checkout draft lineage metadata', 'CHECKOUT_DRAFT_LINEAGE');
+  }
+  return structuredClone(record);
+}
+
 export class InMemoryMandateReplayStore implements MandateReplayStore {
   private readonly state = emptyState();
 
@@ -21,8 +37,8 @@ export class InMemoryMandateReplayStore implements MandateReplayStore {
     this.state.nonces[key] = true;
   }
 
-  async rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string, payloadHash: string): Promise<void> {
-    this.state.checkoutDrafts[id] = { transactionId, checkoutHash, payloadHash };
+  async rememberCheckoutDraft(id: string, record: StoredCheckoutDraft): Promise<void> {
+    this.state.checkoutDrafts[id] = assertCheckoutRecord(record);
   }
 
   async getCheckoutDraft(id: string) {
@@ -76,8 +92,8 @@ export class JsonFileMandateReplayStore implements MandateReplayStore {
     });
   }
 
-  async rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string, payloadHash: string): Promise<void> {
-    await this.mutate((state) => { state.checkoutDrafts[id] = { transactionId, checkoutHash, payloadHash }; });
+  async rememberCheckoutDraft(id: string, record: StoredCheckoutDraft): Promise<void> {
+    await this.mutate((state) => { state.checkoutDrafts[id] = assertCheckoutRecord(record); });
   }
 
   async getCheckoutDraft(id: string) {

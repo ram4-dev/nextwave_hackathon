@@ -76,6 +76,11 @@ export type StoredCheckoutDraft = {
   checkoutHash: string;
   /** SHA-256 base64url of the exact canonical checkout draft payload that was issued. */
   payloadHash: string;
+  /** Hash-only lineage metadata (no JWT / PII beyond opaque subject reference already in the draft). */
+  sub: string;
+  aud: string;
+  iat: number;
+  exp: number;
 };
 
 export type StoredPaymentDraft = {
@@ -88,12 +93,7 @@ export type StoredPaymentDraft = {
 
 export interface MandateReplayStore {
   consumeNonce(transactionId: string, nonce: string): Promise<void>;
-  rememberCheckoutDraft(
-    id: string,
-    transactionId: string,
-    checkoutHash: string,
-    payloadHash: string,
-  ): Promise<void>;
+  rememberCheckoutDraft(id: string, record: StoredCheckoutDraft): Promise<void>;
   getCheckoutDraft(id: string): Promise<StoredCheckoutDraft | undefined>;
   rememberPaymentDraft(id: string, record: StoredPaymentDraft): Promise<void>;
   getPaymentDraft(id: string): Promise<StoredPaymentDraft | undefined>;

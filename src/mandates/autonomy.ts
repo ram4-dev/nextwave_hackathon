@@ -153,12 +153,23 @@ export async function verifyClosedMandateJws(input: {
   expectedPayload: Record<string, unknown>;
   expectedKeyId?: string;
 }): Promise<Record<string, unknown>> {
-  const header = decodeProtectedHeader(input.jws);
+  let header: ReturnType<typeof decodeProtectedHeader>;
+  try {
+    header = decodeProtectedHeader(input.jws);
+  } catch (error) {
+    throw new DomainError(`Closed mandate JWS header decode failed: ${(error as Error).message}`, 'CLOSED_MANDATE_JWS');
+  }
   if (header.alg !== 'ES256') throw new DomainError('Closed mandate JWS alg must be ES256', 'CLOSED_MANDATE_JWS');
-  if (input.expectedKeyId && header.kid !== undefined && header.kid !== input.expectedKeyId) {
+  if (header.typ !== 'JWT') throw new DomainError('Closed mandate JWS typ must be JWT', 'CLOSED_MANDATE_JWS');
+  if (input.expectedKeyId !== undefined && header.kid !== input.expectedKeyId) {
     throw new DomainError('Closed mandate JWS kid mismatch', 'CLOSED_MANDATE_JWS');
   }
-  const key = await importJWK({ ...input.publicKeyJwk, d: undefined } as JsonWebKey, 'ES256');
+  let key;
+  try {
+    key = await importJWK({ ...input.publicKeyJwk, d: undefined } as JsonWebKey, 'ES256');
+  } catch (error) {
+    throw new DomainError(`Closed mandate JWS key import failed: ${(error as Error).message}`, 'CLOSED_MANDATE_JWS');
+  }
   let payloadBytes: Uint8Array;
   try {
     const verified = await compactVerify(input.jws, key);
@@ -166,7 +177,12 @@ export async function verifyClosedMandateJws(input: {
   } catch {
     throw new DomainError('Closed mandate JWS signature invalid', 'CLOSED_MANDATE_JWS');
   }
-  const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Record<string, unknown>;
+  } catch (error) {
+    throw new DomainError(`Closed mandate JWS payload JSON decode failed: ${(error as Error).message}`, 'CLOSED_MANDATE_JWS');
+  }
   if (sha256Base64Url(canonicalJson(payload)) !== sha256Base64Url(canonicalJson(input.expectedPayload))) {
     throw new DomainError('Closed mandate JWS payload mismatch', 'CLOSED_MANDATE_JWS');
   }

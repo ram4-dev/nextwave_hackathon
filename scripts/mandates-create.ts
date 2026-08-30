@@ -17,23 +17,56 @@ type CliInput = CreateMerchantCheckoutInput & {
   };
 };
 
+/**
+ * Materialize relative windows against wall clock (or injectable now).
+ * Fixture absolute timestamps (e.g. 2030 demos) are never trusted as live clock.
+ */
+export function materializeCliInput(input: CliInput, now: Date = new Date()): CliInput {
+  const sampleIssued = Date.parse(input.issuedAt);
+  const sampleExpires = Date.parse(input.expiresAt);
+  const ttlMs = Number.isFinite(sampleIssued) && Number.isFinite(sampleExpires) && sampleExpires > sampleIssued
+    ? sampleExpires - sampleIssued
+    : 600_000;
+  const issuedAt = new Date(now.getTime()).toISOString();
+  const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+  return {
+    ...input,
+    issuedAt,
+    expiresAt,
+    checkoutMandate: {
+      ...input.checkoutMandate,
+      issuedAt,
+      expiresAt,
+    },
+    paymentMandate: input.paymentMandate
+      ? {
+          ...input.paymentMandate,
+          issuedAt,
+          expiresAt,
+        }
+      : undefined,
+  };
+}
+
 export async function createMandatesFromFile(
   filePath: string,
   env: NodeJS.ProcessEnv = process.env,
-  options: { replayStorePath?: string } = {},
+  options: { replayStorePath?: string; now?: () => Date } = {},
 ) {
   const nodeEnv = env.NODE_ENV;
   if (nodeEnv !== 'development' && nodeEnv !== 'test') {
     throw new Error('mandates:create requires NODE_ENV=development or NODE_ENV=test (fail-closed; no implicit default)');
   }
-  const input = JSON.parse(await readFile(filePath, 'utf8')) as CliInput;
+  const raw = JSON.parse(await readFile(filePath, 'utf8')) as CliInput;
+  const clock = options.now ?? (() => new Date());
+  const input = materializeCliInput(raw, clock());
   const rawKey = env.MERCHANT_SIGNING_PRIVATE_JWK;
   const privateJwk = rawKey ? JSON.parse(rawKey) as JsonWebKey : undefined;
-  const signer = await createLocalMerchantSigner({ issuer: input.merchant.id, privateJwk, nodeEnv });
+  const signer = await createLocalMerchantSigner({ issuer: input.merchant.id, privateJwk, nodeEnv, now: clock });
   const store = new JsonFileMandateReplayStore(
     options.replayStorePath ?? path.resolve('.mandate-artifacts', `replay-store-${randomUUID()}.json`),
   );
-  const service = createMandateService({ merchantSigner: signer, replayStore: store });
+  const service = createMandateService({ merchantSigner: signer, replayStore: store, now: clock });
   const { userReference, checkoutMandate, paymentMandate, ...checkoutInput } = input;
   const checkout = await service.createMerchantCheckout(checkoutInput);
   const checkoutDraft = await service.createCheckoutMandateDraft({

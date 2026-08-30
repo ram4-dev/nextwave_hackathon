@@ -11,6 +11,7 @@ import {
 
 const issuedAt = '2029-12-31T00:00:00Z';
 const expiresAt = '2029-12-31T00:10:00Z';
+const now = new Date(issuedAt);
 
 function input() {
   return {
@@ -24,8 +25,8 @@ function input() {
 }
 
 async function service() {
-  const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
-  return createMandateService({ merchantSigner: signer, replayStore: new InMemoryMandateReplayStore(), now: () => new Date('2029-12-31T00:00:00Z') });
+  const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
+  return createMandateService({ merchantSigner: signer, replayStore: new InMemoryMandateReplayStore(), now: () => now });
 }
 
 async function drafts() {
@@ -228,7 +229,7 @@ describe('AP2 mandate drafts', () => {
           expectedUserReference: 'user_001',
         }),
         item.label,
-      ).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|PAYEE_REDIRECT|MANDATE_INPUT/) });
+      ).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|PAYEE_REDIRECT|MANDATE_INPUT|DRAFT_LINEAGE/) });
     }
 
     await expect(sut.verifyDraftConsistency({
@@ -287,7 +288,7 @@ describe('mandates:create CLI handler', () => {
 
 describe('merchant signer header strictness', () => {
   it('requires ES256 typ kid iss aud iat exp', async () => {
-    const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
+    const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const jwt = await signer.signCheckout(input());
     await expect(signer.verifyCheckout(jwt)).resolves.toMatchObject({ transactionId: 'txn_001' });
     await expect(signer.verifyCheckout(`${jwt}x`)).rejects.toMatchObject({ code: 'CHECKOUT_JWT' });
