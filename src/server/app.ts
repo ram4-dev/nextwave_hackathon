@@ -2,24 +2,14 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { getAddress } from 'viem';
 import type { AppConfig } from '../config/env.js';
 import { publicClientConfig } from '../config/env.js';
 import { DomainError } from '../domain/state-machine.js';
 import type { Repository } from '../persistence/repository.js';
 import { CeremonyService } from '../services/ceremony.js';
-import {
-  issueSessionToken,
-  issueSiwbNonce,
-  verifySessionToken,
-  verifySiwbLogin,
-} from '../auth/siwb.js';
+import { issueSessionToken, verifySessionToken } from '../auth/session.js';
 import { getJwks, verifyKyaCredential } from '../credentials/jws.js';
-import type { Hex } from 'viem';
-import {
-  assertPaymasterRequestScoped,
-  incrementPaymasterCapabilityUse,
-  lookupPaymasterCapability,
-} from './paymaster.js';
 
 type Variables = {
   address: `0x${string}`;
@@ -59,35 +49,24 @@ export function createApp(repo: Repository, config: AppConfig) {
     return c.json({ error: 'Internal error' }, 500);
   });
 
-  app.get('/health', (c) => c.json({ ok: true, mode: config.KYA_MODE }));
+  app.get('/health', (c) => c.json({ ok: true }));
 
   app.get('/v1/config', (c) => c.json(publicClientConfig(config)));
 
   app.get('/.well-known/jwks.json', async (c) => c.json(await getJwks(repo)));
 
-  // --- Auth (SIWB) ---
-  app.get('/v1/auth/nonce', async (c) => {
-    const nonce = await issueSiwbNonce(repo, config.NONCE_TTL_SECONDS);
-    return c.json(nonce);
-  });
-
-  app.post('/v1/auth/verify', async (c) => {
-    const body = await c.req.json<{
-      address: `0x${string}`;
-      message: string;
-      signature: Hex;
-    }>();
-    if (config.KYA_MODE === 'demo' && body.message.includes('DEMO_BYPASS')) {
-      const address = body.address.toLowerCase() as `0x${string}`;
-      await issueSiwbNonce(repo, config.NONCE_TTL_SECONDS);
-      const token = await issueSessionToken(repo, config, address);
-      const principal = await ceremony.findOrCreatePrincipal(address);
-      return c.json({ token, address, principalId: principal.id, demo: true });
+  // --- Auth (mocked — no wallet signature verification in this build) ---
+  app.post('/v1/auth/login', async (c) => {
+    const body = await c.req.json<{ address: `0x${string}` }>();
+    let address: `0x${string}`;
+    try {
+      address = getAddress(body.address).toLowerCase() as `0x${string}`;
+    } catch {
+      return c.json({ error: 'Invalid address', code: 'INVALID_ADDRESS' }, 400);
     }
-    const { address } = await verifySiwbLogin(repo, config, body);
     const token = await issueSessionToken(repo, config, address);
     const principal = await ceremony.findOrCreatePrincipal(address);
-    return c.json({ token, address, principalId: principal.id, demo: false });
+    return c.json({ token, address, principalId: principal.id });
   });
 
   const requireSession = createMiddleware<{ Variables: Variables }>(async (c, next) => {
@@ -144,53 +123,14 @@ export function createApp(repo: Repository, config: AppConfig) {
     return c.json({
       status: enrollment.status,
       fingerprintApprovedAt: enrollment.fingerprintApprovedAt,
-      agentId: enrollment.agentId,
-      agentRegistry: enrollment.agentRegistry,
     });
   });
 
-  app.post('/v1/enrollments/:agentUuid/prepare-register', requireSession, async (c) => {
+  app.post('/v1/enrollments/:agentUuid/bind', requireSession, async (c) => {
     const address = c.get('address')!;
     const agentUuid = c.req.param('agentUuid');
-    const chainId = Number(c.req.query('chainId') ?? 84532);
-    const result = await ceremony.prepareRegister(agentUuid, address, chainId);
+    const result = await ceremony.bindAgent(agentUuid, address);
     return c.json(result);
-  });
-
-  app.post('/v1/enrollments/:agentUuid/confirm-demo', requireSession, async (c) => {
-    const address = c.get('address')!;
-    const agentUuid = c.req.param('agentUuid');
-    const result = await ceremony.confirmDemoRegistration(agentUuid, address);
-    return c.json(result);
-  });
-
-  app.post('/v1/enrollments/:agentUuid/claim-credential', requireSession, async (c) => {
-    const address = c.get('address')!;
-    const agentUuid = c.req.param('agentUuid');
-    const result = await ceremony.claimCredential(agentUuid, address);
-    return c.json(result);
-  });
-
-  app.post('/v1/enrollments/:agentUuid/rotate', requireSession, async (c) => {
-    const address = c.get('address')!;
-    const agentUuid = c.req.param('agentUuid');
-    const body = await c.req.json<{
-      publicJwk: JsonWebKey;
-      keystoreProvider: 'os_hardware' | 'encrypted_os_keystore';
-    }>();
-    const enrollment = await ceremony.rotateKey(
-      agentUuid,
-      address,
-      body.publicJwk,
-      body.keystoreProvider,
-    );
-    return c.json({
-      status: enrollment.status,
-      thumbprint: enrollment.thumbprint,
-      agentId: enrollment.agentId,
-      agentRegistry: enrollment.agentRegistry,
-      fingerprintDisplay: enrollment.thumbprint.slice(0, 16),
-    });
   });
 
   app.post('/v1/enrollments/:agentUuid/revoke', requireSession, async (c) => {
@@ -200,24 +140,7 @@ export function createApp(repo: Repository, config: AppConfig) {
     return c.json({ status: enrollment.status });
   });
 
-  app.post('/v1/enrollments/:agentUuid/rebind', requireSession, async (c) => {
-    const address = c.get('address')!;
-    const agentUuid = c.req.param('agentUuid');
-    const body = await c.req.json<{ thumbprint: string }>();
-    const enrollment = await ceremony.rebindAfterTransfer(
-      agentUuid,
-      address,
-      body.thumbprint,
-    );
-    return c.json({
-      status: enrollment.status,
-      agentId: enrollment.agentId,
-      agentRegistry: enrollment.agentRegistry,
-      principalId: enrollment.principalId,
-    });
-  });
-
-  // Enrollment detail — session + owner/current-owner auth; no public PII dump.
+  // Enrollment detail — session + owner auth; no public PII dump.
   app.get('/v1/enrollments/:agentUuid', requireSession, async (c) => {
     const address = c.get('address')!;
     const e = await ceremony.getEnrollmentAuthorized(c.req.param('agentUuid'), address);
@@ -235,63 +158,11 @@ export function createApp(repo: Repository, config: AppConfig) {
     });
   });
 
-  // --- KYC ---
-  app.post('/v1/kyc/sessions', requireSession, async (c) => {
+  // --- KYC (mocked — no external provider in this build) ---
+  app.post('/v1/kyc/complete', requireSession, async (c) => {
     const address = c.get('address')!;
-    const provider = c.req.query('provider') ?? undefined;
-    const result = await ceremony.startKyc(address, provider);
-    return c.json(result, 201);
-  });
-
-  app.post('/v1/kyc/webhooks/:provider', async (c) => {
-    const provider = c.req.param('provider');
-    if (config.KYA_MODE === 'live' && provider === 'demo') {
-      return c.json(
-        { error: 'Demo KYC webhook forbidden in live mode', code: 'KYC_DEMO_FORBIDDEN' },
-        400,
-      );
-    }
-    const rawBody = await c.req.text();
-    const headers: Record<string, string | undefined> = {};
-    c.req.raw.headers.forEach((v, k) => {
-      headers[k.toLowerCase()] = v;
-    });
-    const result = await ceremony.handleKycWebhook(provider, headers, rawBody);
-    return c.json({
-      ok: true,
-      idempotent: result.idempotent,
-      status: result.normalized.status,
-      provider: result.normalized.provider,
-    });
-  });
-
-  app.post('/v1/kyc/demo/complete', requireSession, async (c) => {
-    if (config.KYA_MODE !== 'demo') {
-      return c.json(
-        { error: 'Demo KYC completion forbidden in live mode', code: 'KYC_DEMO_FORBIDDEN' },
-        400,
-      );
-    }
-    const address = c.get('address')!;
-    const started = await ceremony.startKyc(address);
-    const { DemoKycAdapter } = await import('../kyc/demo.js');
-    const { rawBody, signature } = DemoKycAdapter.signWebhook({
-      session_id: started.sessionId,
-      status: 'verified',
-      event_id: `demo-complete-${started.sessionId}`,
-    });
-    const result = await ceremony.handleKycWebhook(
-      'demo',
-      { 'x-demo-signature': signature },
-      rawBody,
-    );
-    return c.json({ ok: true, status: result.normalized.status });
-  });
-
-  // --- Agent URI ---
-  app.get('/v1/agents/:agentUuid/agent-uri.json', async (c) => {
-    const doc = await ceremony.getAgentUriDocument(c.req.param('agentUuid'));
-    return c.json(doc);
+    const result = await ceremony.completeKyc(address);
+    return c.json({ kycStatus: result.principal.kycStatus });
   });
 
   // --- Challenges ---
@@ -332,38 +203,6 @@ export function createApp(repo: Repository, config: AppConfig) {
     const body = await c.req.json<{ token: string }>();
     const claims = await verifyKyaCredential(repo, config, body.token);
     return c.json({ ok: true, claims });
-  });
-
-  // --- Paymaster proxy (capability-gated; provider credentials server-only) ---
-  app.all('/v1/paymaster/proxy', async (c) => {
-    if (!config.PAYMASTER_PROXY_ENABLED || !config.PAYMASTER_URL) {
-      return c.json({ error: 'Paymaster proxy disabled' }, 503);
-    }
-    if (c.req.method !== 'POST') {
-      return c.json({ error: 'POST only', code: 'PAYMASTER_METHOD' }, 405);
-    }
-    const rawToken =
-      c.req.query('c') ??
-      c.req.header('x-paymaster-capability') ??
-      undefined;
-    const cap = await lookupPaymasterCapability(repo, rawToken);
-    const rawBody = await c.req.text();
-    assertPaymasterRequestScoped(cap, rawBody);
-    // Count only successfully scoped requests (after validation, before forward).
-    await incrementPaymasterCapabilityUse(repo, cap.tokenHash);
-
-    const res = await fetch(config.PAYMASTER_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: rawBody,
-    });
-    const text = await res.text();
-    return new Response(text, {
-      status: res.status,
-      headers: {
-        'Content-Type': res.headers.get('Content-Type') ?? 'application/json',
-      },
-    });
   });
 
   // --- Principals ---

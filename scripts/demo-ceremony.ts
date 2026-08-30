@@ -4,15 +4,10 @@
 import { loadConfig } from '../src/config/env.js';
 import { InMemoryRepository } from '../src/persistence/repository.js';
 import { CeremonyService } from '../src/services/ceremony.js';
-import { DemoKycAdapter } from '../src/kyc/demo.js';
 import { verifyKyaCredential } from '../src/credentials/jws.js';
 
 async function main() {
-  const config = loadConfig({
-    ...process.env,
-    KYA_MODE: 'demo',
-    NODE_ENV: 'development',
-  });
+  const config = loadConfig({ ...process.env, NODE_ENV: 'development' });
   const repo = new InMemoryRepository();
   const ceremony = new CeremonyService(repo, config);
   const owner = '0x1111111111111111111111111111111111111111' as const;
@@ -30,16 +25,10 @@ async function main() {
   console.log('enrollment', started.agentUuid, started.deviceCode);
 
   await ceremony.attachHuman(started.agentUuid, owner);
-  const kyc = await ceremony.startKyc(owner);
-  const { rawBody, signature } = DemoKycAdapter.signWebhook({
-    session_id: kyc.sessionId,
-    status: 'verified',
-    event_id: 'cli-demo',
-  });
-  await ceremony.handleKycWebhook('demo', { 'x-demo-signature': signature }, rawBody);
+  await ceremony.completeKyc(owner);
   await ceremony.attachHuman(started.agentUuid, owner);
   await ceremony.approveFingerprint(started.agentUuid, owner, started.thumbprint);
-  const bound = await ceremony.confirmDemoRegistration(started.agentUuid, owner);
+  const bound = await ceremony.bindAgent(started.agentUuid, owner);
   const claims = await verifyKyaCredential(repo, config, bound.token);
   console.log(
     JSON.stringify(

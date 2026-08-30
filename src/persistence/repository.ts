@@ -1,15 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   AgentEnrollment,
   AuthNonce,
-  EventCursor,
   KyaCredentialRecord,
-  KycSessionRecord,
-  PaymasterCapability,
   Principal,
-  ProcessedEvent,
 } from '../domain/types.js';
 
 export interface KyaStore {
@@ -17,10 +13,6 @@ export interface KyaStore {
   enrollments: AgentEnrollment[];
   credentials: KyaCredentialRecord[];
   nonces: AuthNonce[];
-  kycSessions: KycSessionRecord[];
-  processedEvents: ProcessedEvent[];
-  cursors: EventCursor[];
-  paymasterCapabilities: PaymasterCapability[];
   /** Public signing key metadata only — never private JWK material. */
   signingKeys: SigningKeyPublicRecord[];
 }
@@ -48,10 +40,6 @@ function emptyStore(): KyaStore {
     enrollments: [],
     credentials: [],
     nonces: [],
-    kycSessions: [],
-    processedEvents: [],
-    cursors: [],
-    paymasterCapabilities: [],
     signingKeys: [],
   };
 }
@@ -86,11 +74,6 @@ export class JsonFileRepository implements Repository {
     try {
       const raw = await readFile(this.filePath, 'utf8');
       const parsed = { ...emptyStore(), ...JSON.parse(raw) } as KyaStore;
-      for (const cursor of parsed.cursors) {
-        if (typeof cursor.lastBlock === 'string') {
-          cursor.lastBlock = BigInt(cursor.lastBlock);
-        }
-      }
       return scrubStoreForPersistence(parsed);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -110,11 +93,7 @@ export class JsonFileRepository implements Repository {
     const tmp = `${this.filePath}.${randomUUID()}.tmp`;
     await writeFile(
       tmp,
-      JSON.stringify(
-        scrubbed,
-        (_key, value) => (typeof value === 'bigint' ? value.toString() : value),
-        2,
-      ),
+      JSON.stringify(scrubbed, null, 2),
       'utf8',
     );
     await rename(tmp, this.filePath);
@@ -162,16 +141,4 @@ export class InMemoryRepository implements Repository {
 
 export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`;
-}
-
-export function sha256Hex(input: string): string {
-  return createHash('sha256').update(input).digest('hex');
-}
-
-export function eventId(
-  chainId: number,
-  txHash: string,
-  logIndex: number,
-): string {
-  return `${chainId}:${txHash.toLowerCase()}:${logIndex}`;
 }

@@ -32,13 +32,10 @@ export function needsKyc(principal: Principal | undefined, now = new Date()): bo
 const ENROLLMENT_TRANSITIONS: Record<EnrollmentStatus, EnrollmentStatus[]> = {
   awaiting_device: ['awaiting_human', 'revoked'],
   awaiting_human: ['awaiting_kyc', 'awaiting_fingerprint', 'revoked'],
-  awaiting_kyc: ['awaiting_fingerprint', 'awaiting_kyc', 'awaiting_human', 'revoked'],
-  // awaiting_fingerprint → bound: key rotation / transfer rebind (Agent ID retained).
-  awaiting_fingerprint: ['awaiting_register', 'bound', 'revoked'],
-  awaiting_register: ['awaiting_onchain', 'revoked'],
-  awaiting_onchain: ['bound', 'revoked'],
-  bound: ['suspended', 'revoked', 'awaiting_fingerprint'],
-  suspended: ['awaiting_fingerprint', 'bound', 'revoked'],
+  awaiting_kyc: ['awaiting_fingerprint', 'awaiting_human', 'revoked'],
+  awaiting_fingerprint: ['awaiting_register', 'revoked'],
+  awaiting_register: ['bound', 'revoked'],
+  bound: ['revoked'],
   revoked: [],
 };
 
@@ -78,13 +75,11 @@ export function credentialUsable(status: CredentialStatus, expiresAt: string, no
   return new Date(expiresAt).getTime() > now.getTime();
 }
 
+/** Mocked KYC completion — no external provider, no session/assurance metadata. */
 export function applyKycStatus(
   principal: Principal,
   status: KycNormalizedStatus,
   meta: {
-    provider: string;
-    sessionRef: string;
-    assuranceLevel?: string;
     ttlDays: number;
     now?: Date;
   },
@@ -93,9 +88,6 @@ export function applyKycStatus(
   const next: Principal = {
     ...principal,
     kycStatus: status,
-    kycProvider: meta.provider,
-    kycSessionRef: meta.sessionRef,
-    kycAssuranceLevel: meta.assuranceLevel,
     updatedAt: now.toISOString(),
   };
   if (status === 'verified') {
@@ -108,41 +100,4 @@ export function applyKycStatus(
     next.kycExpiresAt = now.toISOString();
   }
   return next;
-}
-
-export function suspendOnTransfer(enrollment: AgentEnrollment): AgentEnrollment {
-  if (enrollment.status === 'revoked') return enrollment;
-  if (enrollment.status === 'suspended') return enrollment;
-  if (enrollment.status === 'bound') {
-    return transitionEnrollment(enrollment, 'suspended');
-  }
-  return {
-    ...enrollment,
-    status: 'suspended',
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-export function mainnetPromotionAllowed(opts: {
-  enabled: boolean;
-  registryVerified: boolean;
-  getVersionOk: boolean;
-  codePresent: boolean;
-}): { allowed: boolean; reason?: string } {
-  if (!opts.enabled) {
-    return { allowed: false, reason: 'MAINNET_PROMOTION_ENABLED is false' };
-  }
-  if (!opts.registryVerified) {
-    return { allowed: false, reason: 'MAINNET_REGISTRY_VERIFIED is false' };
-  }
-  if (!opts.codePresent) {
-    return { allowed: false, reason: 'No contract code at mainnet registry address' };
-  }
-  if (!opts.getVersionOk) {
-    return {
-      allowed: false,
-      reason: 'getVersion must equal supported Identity Registry version 2.0.0',
-    };
-  }
-  return { allowed: true };
 }
