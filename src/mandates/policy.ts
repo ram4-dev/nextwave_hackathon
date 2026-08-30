@@ -1,4 +1,5 @@
 import { DomainError } from '../domain/state-machine.js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { CheckoutSnapshot } from './types.js';
 
 export type OpenMandateConstraints = {
@@ -61,6 +62,42 @@ export class InMemoryMandatePolicyLedger implements MandatePolicyLedger {
     return run;
   }
   async release(transactionId: string): Promise<void> { this.reservations.delete(transactionId); }
+}
+
+/** Durable policy ledger backed by Supabase RPC transactions. */
+export class SupabaseMandatePolicyLedger implements MandatePolicyLedger {
+  constructor(private readonly client: SupabaseClient) {}
+
+  async reserve(input: Parameters<MandatePolicyLedger['reserve']>[0]): Promise<void> {
+    const { error } = await this.client.rpc('reserve_mandate_policy', {
+      p_checkout_mandate_id: input.checkoutMandateId,
+      p_payment_mandate_id: input.paymentMandateId,
+      p_transaction_id: input.transactionId,
+      p_amount_minor: input.amountMinor,
+      p_reserved_at: input.now.toISOString(),
+      p_total_budget_minor: input.constraints.totalBudgetMinor,
+      p_max_operations: input.constraints.maxOperations,
+      p_frequency_window_seconds: input.constraints.frequencyWindowSeconds,
+      p_max_operations_per_window: input.constraints.maxOperationsPerWindow,
+    });
+    if (error) throw new DomainError(`Policy reservation rejected: ${error.message}`, 'POLICY_RESERVATION');
+  }
+
+  async release(transactionId: string): Promise<void> {
+    const { error } = await this.client.rpc('release_mandate_policy_reservation', {
+      p_transaction_id: transactionId,
+    });
+    if (error) throw new DomainError(`Policy reservation release failed: ${error.message}`, 'POLICY_RESERVATION');
+  }
+}
+
+export function createSupabaseMandatePolicyLedger(env: NodeJS.ProcessEnv = process.env): SupabaseMandatePolicyLedger {
+  const url = env.SUPABASE_URL;
+  const secretKey = env.SUPABASE_SECRET_KEY;
+  if (!url || !secretKey || url.includes('<') || secretKey.includes('<')) {
+    throw new DomainError('SUPABASE_URL and SUPABASE_SECRET_KEY must be configured', 'SUPABASE_CONFIG');
+  }
+  return new SupabaseMandatePolicyLedger(createClient(url, secretKey, { auth: { persistSession: false, autoRefreshToken: false } }));
 }
 
 export class MandatePolicyEvaluator {

@@ -10,7 +10,10 @@ for (const name of required) {
   if (!process.env[name]) throw new Error(`${name} is required`);
 }
 
-const { viem } = await network.connect();
+const connection = await network.connect();
+const viem = (connection as unknown as {
+  viem: { deployContract(name: string, args: readonly string[]): Promise<{ address: string }> };
+}).viem;
 const contract = await viem.deployContract('MandateAnchor', [
   process.env.MANDATE_ANCHOR_ADMIN!,
   process.env.MANDATE_ANCHOR_PAUSER!,

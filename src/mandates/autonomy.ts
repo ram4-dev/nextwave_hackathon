@@ -3,7 +3,7 @@ import { CompactSign, compactVerify, exportJWK, generateKeyPair, importJWK } fro
 import { DomainError } from '../domain/state-machine.js';
 import { checkoutHash } from './index.js';
 import { assertTrustedAgent, type AgentTrustVerifier } from './agent-trust.js';
-import { InMemoryMandatePolicyLedger, MandatePolicyEvaluator, type MandatePolicyLedger, type OpenMandateConstraints, type OpenMandateRecord } from './policy.js';
+import { createSupabaseMandatePolicyLedger, InMemoryMandatePolicyLedger, MandatePolicyEvaluator, type MandatePolicyLedger, type OpenMandateConstraints, type OpenMandateRecord } from './policy.js';
 import type { CheckoutSnapshot, MerchantSigner } from './types.js';
 
 export interface TrustedSurfaceSignatureVerifier {
@@ -99,7 +99,10 @@ export async function createAutonomousClosedMandates(input: {
   const evaluator = input.policyEvaluator ?? new MandatePolicyEvaluator();
   const policy = evaluator.evaluate({ checkout, payeeId: input.payeeId, paymentInstrumentAlias: input.paymentInstrumentAlias, openCheckout: input.openCheckoutMandate, openPayment: input.openPaymentMandate, now });
   evaluator.assertAllowed(policy);
-  const ledger = input.policyLedger ?? new InMemoryMandatePolicyLedger();
+  // Production must be durable: fail closed if the Supabase configuration is missing.
+  const ledger = input.policyLedger ?? (process.env.NODE_ENV === 'production'
+    ? createSupabaseMandatePolicyLedger()
+    : new InMemoryMandatePolicyLedger());
   await ledger.reserve({ checkoutMandateId: input.openCheckoutMandate.id, paymentMandateId: input.openPaymentMandate.id, transactionId: input.transactionId, amountMinor: checkout.totals.totalMinor, constraints: input.openPaymentMandate.constraints, now });
   const common = { transaction_id: input.transactionId, checkout_hash: input.checkoutHash, agent_id: input.agentIdentity.agentId, tenant_id: input.agentIdentity.tenantId, agent_key_id: input.agentKeyReference, cnf: { jwk: input.agentSigner.publicKeyJwk }, iat: Math.floor(now.getTime() / 1000), policy_version: trust.policyVersion, open_checkout_mandate_id: input.openCheckoutMandate.id, open_payment_mandate_id: input.openPaymentMandate.id };
   const checkoutPayload = { ...common, vct: 'mandate.checkout.1', jti: `closed_checkout_${randomUUID().replace(/-/g, '')}` };

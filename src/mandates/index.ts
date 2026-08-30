@@ -2,6 +2,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { DomainError } from '../domain/state-machine.js';
 import { InMemoryMandateReplayStore } from './replay-store.js';
+export {
+  Eip712TrustedSurfaceService,
+  InMemoryTrustedSurfaceApprovalStore,
+  createBaseTypedDataVerifier,
+  mandateApprovalDomain,
+  mandateApprovalTypes,
+  type Eip712ApprovalChallenge,
+  type Eip712ApprovalProof,
+  type MandateApprovalMessage,
+  type TrustedSurfaceApprovalStore,
+  type TypedDataVerifier,
+} from './trusted-surface.js';
 import type {
   CheckoutMandatePayload,
   CheckoutSnapshot,
@@ -200,3 +212,4 @@ export * from './types.js';
 export * from './agent-trust.js';
 export * from './policy.js';
 export * from './autonomy.js';
+export * from './request-store.js';

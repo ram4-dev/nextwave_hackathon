@@ -42,3 +42,19 @@ El contrato debe recibir solamente `closedCheckoutHash`, `closedPaymentHash`, `c
 ## Qué no hacer todavía
 
 No conectar Yuno ni ejecutar pagos. Primero se debe tener firma explícita, verificación KYA, política determinista, persistencia durable y el anclaje auditado. Un estado `verified_pending_anchor` significa que la autorización fue verificada localmente pero aún no es evidencia on-chain.
+
+## Persistencia de políticas
+
+Ejecuta también `supabase/migrations/20260830_create_mandate_policy_ledger.sql` en el SQL Editor de Supabase. En producción, `createAutonomousClosedMandates` usa `SupabaseMandatePolicyLedger` por defecto y falla si faltan `SUPABASE_URL` o `SUPABASE_SECRET_KEY`. El RPC reserva presupuesto y frecuencia dentro de una transacción y evita carreras entre instancias.
+
+## Trusted Surface EIP-712
+
+La firma explícita del usuario usa la wallet ya vinculada por KYA, en Base Sepolia (`84532`) o Base (`8453`), nunca una clave privada en el backend. `Eip712TrustedSurfaceService.createApprovalChallenge()` comprueba que el mandato esté pendiente, que la wallet sea el `ownerAddress` del `Principal` KYA, que el enrollment esté `bound`, que KYC esté vigente y que el agente tenga una credencial KYA activa. Devuelve el `domain`, `types`, `primaryType` y `message` que el frontend debe enviar a la wallet mediante `eth_signTypedData_v4`.
+
+`verifyAndRecordApproval()` verifica esa firma usando el RPC de Base y `publicClient.verifyTypedData`, compatible con wallets smart/ERC-1271. El challenge es de un solo uso, expira como máximo en cinco minutos y la firma queda ligada por hash al payload canónico completo del mandato, usuario, agente, nonce y ventana temporal. No se debe sustituir este método por una firma de texto ni confiar en una confirmación enviada por el agente.
+
+En el frontend, presentar primero el resumen legible de límites, importe, moneda, comercio e instrumento enmascarado; sólo después solicitar la firma del typed data devuelto por el servicio. Base documenta el método [`eth_signTypedData_v4`](https://docs.base.org/base-account/reference/core/provider-rpc-methods/eth_signTypedData_v4) y su [guía de firma/verificación typed data](https://docs.base.org/base-account/guides/sign-and-verify-typed-data).
+
+### Pendiente para producción
+
+El servicio EIP-712 y sus pruebas están listos, pero el `InMemoryOpenMandateRegistry` y `InMemoryTrustedSurfaceApprovalStore` son almacenamiento local. Antes de exponer la UI al usuario, reemplazarlos por tablas/RPC transaccionales de Supabase (mandatos, challenges y firmas) y conectar las dos operaciones a los handlers protegidos por `requireSession`. Así se conserva anti-replay y el cambio a `active` incluso con reinicios o varias instancias.
