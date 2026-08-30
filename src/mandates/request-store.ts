@@ -4,6 +4,9 @@ import { z } from 'zod';
 import { DomainError } from '../domain/state-machine.js';
 
 const opaqueId = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'Opaque identifier required');
+const promptHashSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'promptHash must be SHA-256 base64url (43 chars)');
+const encryptedPromptRefSchema = opaqueId.max(512);
+
 const requestSchema = z.object({
   requestId: opaqueId.optional(),
   transactionId: opaqueId,
@@ -11,7 +14,7 @@ const requestSchema = z.object({
   tenantId: opaqueId,
   prompt: z.string().min(1).max(20_000),
   /** Optional opaque reference to ciphertext stored outside the mandate DB (never the raw prompt). */
-  encryptedPromptRef: opaqueId.max(512).optional(),
+  encryptedPromptRef: encryptedPromptRefSchema.optional(),
   receivedAt: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
@@ -36,6 +39,27 @@ export interface MandateRequestStore {
 
 function hashPrompt(prompt: string): string {
   return createHash('sha256').update(prompt, 'utf8').digest('base64url');
+}
+
+export function assertMandatePromptHash(promptHash: string): void {
+  if (!promptHashSchema.safeParse(promptHash).success) {
+    throw new DomainError('promptHash must be exact SHA-256 base64url (43 chars)', 'MANDATE_REQUEST_PROMPT_HASH');
+  }
+}
+
+export function assertEncryptedPromptRef(ref: string | undefined): void {
+  if (ref === undefined) return;
+  if (!encryptedPromptRefSchema.safeParse(ref).success) {
+    throw new DomainError('encryptedPromptRef must be an opaque reference', 'MANDATE_REQUEST_PROMPT_REF');
+  }
+}
+
+function assertStoreInput(input: MandateRequestStoreInput): void {
+  if ('prompt' in (input as Record<string, unknown>)) {
+    throw new DomainError('Plaintext prompt must never reach the mandate request store', 'MANDATE_REQUEST_PROMPT');
+  }
+  assertMandatePromptHash(input.promptHash);
+  assertEncryptedPromptRef(input.encryptedPromptRef);
 }
 
 /** Application function called by the MCP-facing layer; it deliberately exposes no HTTP route. */
@@ -68,9 +92,7 @@ export class SupabaseMandateRequestStore implements MandateRequestStore {
   constructor(private readonly client: SupabaseClient) {}
 
   async create(input: MandateRequestStoreInput): Promise<MandateRequestRecord> {
-    if ('prompt' in (input as Record<string, unknown>)) {
-      throw new DomainError('Plaintext prompt must never reach the mandate request store', 'MANDATE_REQUEST_PROMPT');
-    }
+    assertStoreInput(input);
     const { data, error } = await this.client.rpc('create_mandate_request', {
       p_id: input.id,
       p_transaction_id: input.transactionId,
@@ -118,9 +140,7 @@ export class InMemoryMandateRequestStore implements MandateRequestStore {
   private readonly records = new Map<string, MandateRequestRecord>();
 
   async create(input: MandateRequestStoreInput): Promise<MandateRequestRecord> {
-    if ('prompt' in (input as Record<string, unknown>)) {
-      throw new DomainError('Plaintext prompt must never reach the mandate request store', 'MANDATE_REQUEST_PROMPT');
-    }
+    assertStoreInput(input);
     if (this.records.has(input.id) || [...this.records.values()].some((item) => item.transactionId === input.transactionId)) {
       throw new DomainError('Mandate request already exists', 'MANDATE_REQUEST_DUPLICATE');
     }
