@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DomainError } from '../domain/state-machine.js';
 
 const BASE64URL_SHA256 = /^[A-Za-z0-9_-]{43}$/;
@@ -15,6 +16,8 @@ export type MandateAnchorJob = {
   mandateType: number;
   attempts: number;
   status: 'pending' | 'processing' | 'anchored' | 'failed';
+  /** Opaque claim lease token. Required for CAS updates from the claiming worker. */
+  claimToken?: string;
   lastError?: string;
   txHash?: string;
   leaseUntil?: string;
@@ -42,8 +45,8 @@ export interface MandateAnchorClient {
 export interface MandateAnchorOutbox {
   enqueue(evidence: MandateAnchorEvidence): Promise<MandateAnchorJob>;
   claimNext(now?: Date): Promise<MandateAnchorJob | undefined>;
-  markAnchored(id: string, txHash: string, now?: Date): Promise<MandateAnchorJob>;
-  markFailed(id: string, error: string, now?: Date): Promise<MandateAnchorJob>;
+  markAnchored(id: string, txHash: string, claimToken: string, now?: Date): Promise<MandateAnchorJob>;
+  markFailed(id: string, error: string, claimToken: string, now?: Date): Promise<MandateAnchorJob>;
   get(id: string): Promise<MandateAnchorJob>;
 }
 
@@ -70,13 +73,29 @@ function assertHashOnly(evidence: MandateAnchorEvidence): void {
   }
 }
 
+function assertPositiveInt(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new DomainError(`${label} must be a positive integer`, 'ANCHOR_CONFIG');
+  }
+  return value;
+}
+
+/**
+ * In-memory hash-only outbox. Sole authority for leaseMs and maxAttempts.
+ * Workers must not carry a competing attempt budget.
+ */
 export class InMemoryMandateAnchorOutbox implements MandateAnchorOutbox {
   private readonly jobs = new Map<string, MandateAnchorJob>();
   private readonly byEvidence = new Map<string, string>();
   private lock: Promise<unknown> = Promise.resolve();
   private seq = 0;
+  private readonly leaseMs: number;
+  private readonly maxAttempts: number;
 
-  constructor(private readonly options: { leaseMs?: number; maxAttempts?: number } = {}) {}
+  constructor(options: { leaseMs?: number; maxAttempts?: number } = {}) {
+    this.leaseMs = assertPositiveInt(options.leaseMs ?? 30_000, 'leaseMs');
+    this.maxAttempts = assertPositiveInt(options.maxAttempts ?? 5, 'maxAttempts');
+  }
 
   private evidenceKey(evidence: MandateAnchorEvidence): string {
     return `${evidence.closedCheckoutHash}:${evidence.closedPaymentHash}`;
@@ -105,16 +124,23 @@ export class InMemoryMandateAnchorOutbox implements MandateAnchorOutbox {
   }
 
   async claimNext(now = new Date()): Promise<MandateAnchorJob | undefined> {
-    const leaseMs = this.options.leaseMs ?? 30_000;
     const run = this.lock.then(() => {
       for (const job of this.jobs.values()) {
         const leaseExpired = job.leaseUntil ? Date.parse(job.leaseUntil) <= now.getTime() : true;
         const reclaimable = job.status === 'processing' && leaseExpired;
         if (job.status === 'pending' || reclaimable) {
-          job.status = 'processing';
           job.attempts += 1;
-          job.leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
           job.updatedAt = now.toISOString();
+          if (job.attempts > this.maxAttempts) {
+            job.status = 'failed';
+            job.claimToken = undefined;
+            job.leaseUntil = undefined;
+            job.lastError = 'max attempts exceeded';
+            continue;
+          }
+          job.status = 'processing';
+          job.claimToken = randomUUID();
+          job.leaseUntil = new Date(now.getTime() + this.leaseMs).toISOString();
           return structuredClone(job);
         }
       }
@@ -124,27 +150,37 @@ export class InMemoryMandateAnchorOutbox implements MandateAnchorOutbox {
     return run;
   }
 
-  async markAnchored(id: string, txHash: string, now = new Date()): Promise<MandateAnchorJob> {
+  async markAnchored(id: string, txHash: string, claimToken: string, now = new Date()): Promise<MandateAnchorJob> {
     if (!TX_HASH.test(txHash)) throw new DomainError('Anchor txHash must be bytes32 hex', 'ANCHOR_TXHASH');
     const job = this.jobs.get(id);
     if (!job) throw new DomainError('Anchor job not found', 'ANCHOR_NOT_FOUND');
     if (job.status === 'anchored') return structuredClone(job);
+    if (!claimToken || job.claimToken !== claimToken || job.status !== 'processing') {
+      // Stale claim — do not mutate a newer worker's result.
+      return structuredClone(job);
+    }
     job.status = 'anchored';
     job.txHash = txHash;
     job.anchoredAt = now.toISOString();
     job.updatedAt = now.toISOString();
     job.leaseUntil = undefined;
+    job.claimToken = undefined;
     job.lastError = undefined;
     return structuredClone(job);
   }
 
-  async markFailed(id: string, error: string, now = new Date()): Promise<MandateAnchorJob> {
-    const maxAttempts = this.options.maxAttempts ?? 5;
+  async markFailed(id: string, error: string, claimToken: string, now = new Date()): Promise<MandateAnchorJob> {
     const job = this.jobs.get(id);
     if (!job) throw new DomainError('Anchor job not found', 'ANCHOR_NOT_FOUND');
+    if (job.status === 'anchored' || job.status === 'failed') return structuredClone(job);
+    if (!claimToken || job.claimToken !== claimToken || job.status !== 'processing') {
+      // Stale claim — never convert an anchored/reclaimed job back to pending/failed.
+      return structuredClone(job);
+    }
     job.lastError = error;
     job.updatedAt = now.toISOString();
-    if (job.attempts >= maxAttempts) {
+    job.claimToken = undefined;
+    if (job.attempts >= this.maxAttempts) {
       job.status = 'failed';
       job.leaseUntil = undefined;
     } else {
@@ -172,21 +208,23 @@ export class FakeMandateAnchorClient implements MandateAnchorClient {
   }
 }
 
+/** Worker uses the outbox as the sole maxAttempts/lease authority. */
 export class MandateAnchorWorker {
   constructor(
     private readonly outbox: MandateAnchorOutbox,
     private readonly client: MandateAnchorClient,
-    private readonly options: { maxAttempts?: number; now?: () => Date } = {},
+    private readonly options: { now?: () => Date } = {},
   ) {}
 
   async processOnce(): Promise<MandateAnchorJob | undefined> {
     const now = this.options.now?.() ?? new Date();
     const job = await this.outbox.claimNext(now);
     if (!job) return undefined;
-    const maxAttempts = this.options.maxAttempts ?? 5;
-    if (job.attempts > maxAttempts) {
-      return this.outbox.markFailed(job.id, 'max attempts exceeded', now);
+    if (job.status === 'failed') return job;
+    if (!job.claimToken) {
+      throw new DomainError('Claimed anchor job missing claimToken', 'ANCHOR_CLAIM');
     }
+    const claimToken = job.claimToken;
     try {
       const result = await this.client.anchor({
         closedCheckoutHash: job.closedCheckoutHash,
@@ -197,9 +235,9 @@ export class MandateAnchorWorker {
         policyVersionHash: job.policyVersionHash,
         mandateType: job.mandateType,
       });
-      return await this.outbox.markAnchored(job.id, result.txHash, now);
+      return await this.outbox.markAnchored(job.id, result.txHash, claimToken, now);
     } catch (error) {
-      return await this.outbox.markFailed(job.id, (error as Error).message, now);
+      return await this.outbox.markFailed(job.id, (error as Error).message, claimToken, now);
     }
   }
 }
