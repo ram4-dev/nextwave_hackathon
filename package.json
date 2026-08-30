@@ -15,7 +15,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "demo:ceremony": "tsx scripts/demo-ceremony.ts"
+    "demo:ceremony": "tsx scripts/demo-ceremony.ts",
+    "mandates:create": "tsx scripts/mandates-create.ts mandates:create"
   },
   "engines": {
     "node": ">=20"

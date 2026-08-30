@@ -1,6 +1,6 @@
 # KYA — Know Your Agent
 
-Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). Merchant, payments, and AP2 are out of scope.
+Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). It also includes a local-only first phase for AP2 checkout/payment **drafts**; it does not create payments or final user-signed mandates.
 
 **Authoritative product scope:** [`FLOW.md`](./FLOW.md)
 
@@ -84,6 +84,18 @@ npm test
 npm run build
 npm run demo:ceremony
 ```
+
+## AP2 mandate drafts (phase 1)
+
+The domain library at `src/mandates` creates an immutable merchant ES256 Checkout JWT, its SHA-256 base64url hash, and unsigned AP2 checkout/payment draft payloads. Every boundary is strict Zod validation: integer minor units only, ISO 4217 currency, HTTP(S) merchant/payee URLs, total reconciliation, expiry, JWT/hash verification, opaque masked payment references, and per-transaction nonce replay prevention.
+
+```bash
+npm run mandates:create -- --input ./fixtures/validated-checkout.json
+```
+
+The input fixture is intentionally fake. `MERCHANT_SIGNING_PRIVATE_JWK` may provide a P-256 private JWK in development/test. Without it, development/test generates a process-local key; production rejects the local signer and requires an injected `MerchantSigner` backed by the deployment's secret provider or HSM. To print JWTs in an explicit development/test session only, set `MANDATES_ALLOW_FULL_OUTPUT=true`; normal output is redacted. Local replay metadata goes to ignored `.mandate-artifacts/` and contains no JWTs, payment credentials, or private keys.
+
+See [`docs/AP2_MANDATES.md`](./docs/AP2_MANDATES.md) for flow and integration boundaries.
 
 ## License
 

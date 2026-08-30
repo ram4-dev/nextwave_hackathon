@@ -10,6 +10,7 @@ coverage/
 
 # Local KYA data & env
 .kya-data/
+.mandate-artifacts/
 .env
 .env.local
 .env.*.local
@@ -17,4 +18,3 @@ coverage/
 # OS / editor
 .DS_Store
 *.log
-

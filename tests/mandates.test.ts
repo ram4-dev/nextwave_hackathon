@@ -1,0 +1,75 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createLocalMerchantSigner, createMandateService, InMemoryMandateReplayStore } from '../src/mandates/index.js';
+import { createMandatesFromFile } from '../scripts/mandates-create.js';
+
+const issuedAt = '2030-01-01T00:00:00Z';
+const expiresAt = '2030-01-01T00:10:00Z';
+
+function input() {
+  return {
+    transactionId: 'txn_001', merchant: { id: 'merchant_001', legalName: 'Merchant LLC', website: 'https://merchant.example' }, customerReference: 'customer_001',
+    lineItems: [{ productId: 'product_001', title: 'Product', quantity: 2, unitAmountMinor: 1250, taxAmountMinor: 250, discountAmountMinor: 100 }],
+    shipping: { optionId: 'standard', amountMinor: 500 }, totals: { subtotalMinor: 2500, taxMinor: 250, discountMinor: 100, totalMinor: 3150, currency: 'USD' },
+    issuedAt, expiresAt, source: { type: 'llm' as const, requestId: 'request_001' },
+  };
+}
+
+async function service() {
+  const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
+  return createMandateService({ merchantSigner: signer, replayStore: new InMemoryMandateReplayStore(), now: () => new Date('2029-12-31T00:00:00Z') });
+}
+
+async function drafts() {
+  const sut = await service(); const checkout = await sut.createMerchantCheckout(input());
+  const checkoutDraft = await sut.createCheckoutMandateDraft({ checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: checkout.transactionId, userReference: 'user_001', nonce: 'nonce_checkout', issuedAt, expiresAt });
+  return { sut, checkout, checkoutDraft };
+}
+
+describe('AP2 mandate drafts', () => {
+  it('creates a verifiable merchant checkout and unsigned checkout draft', async () => {
+    const { sut, checkout, checkoutDraft } = await drafts();
+    expect(checkout.checkoutHash).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(checkoutDraft.status).toBe('awaiting_user_signature');
+    await expect(sut.verifyDraftConsistency({ checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_001', draft: checkoutDraft.unsignedMandatePayload })).resolves.toMatchObject({ valid: true });
+  });
+
+  it('rejects bad totals, tampered JWTs, and mismatched hashes', async () => {
+    const sut = await service(); const wrong = input(); wrong.totals.totalMinor = 1;
+    await expect(sut.createMerchantCheckout(wrong)).rejects.toMatchObject({ code: 'CHECKOUT_TOTALS' });
+    const checkout = await sut.createMerchantCheckout(input());
+    await expect(sut.createCheckoutMandateDraft({ checkoutJwt: `${checkout.checkoutJwt}x`, checkoutHash: checkout.checkoutHash, transactionId: 'txn_001', userReference: 'user_001', nonce: 'nonce_1', issuedAt, expiresAt })).rejects.toMatchObject({ code: 'CHECKOUT_HASH' });
+    await expect(sut.createCheckoutMandateDraft({ checkoutJwt: checkout.checkoutJwt, checkoutHash: 'A'.repeat(43), transactionId: 'txn_001', userReference: 'user_001', nonce: 'nonce_2', issuedAt, expiresAt })).rejects.toMatchObject({ code: 'CHECKOUT_HASH' });
+  });
+
+  it('rejects mismatched payment, sensitive instrument fields, replay, and expired mandates', async () => {
+    const { sut, checkout, checkoutDraft } = await drafts();
+    const base = { transactionId: 'txn_001', checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, checkoutMandateDraftId: checkoutDraft.id, payee: { id: 'merchant_001', name: 'Merchant', website: 'https://merchant.example' }, userReference: 'user_001', nonce: 'nonce_payment', issuedAt, expiresAt };
+    await expect(sut.createPaymentMandateDraft({ ...base, paymentAmount: { amountMinor: 1, currency: 'USD' }, paymentInstrument: { id: 'instrument_001', type: 'card', descriptionMasked: 'Card •••• 1234' } })).rejects.toMatchObject({ code: 'PAYMENT_AMOUNT' });
+    await expect(sut.createPaymentMandateDraft({ ...base, paymentAmount: { amountMinor: 3150, currency: 'EUR' }, paymentInstrument: { id: 'instrument_001', type: 'card', descriptionMasked: 'Card •••• 1234' } })).rejects.toMatchObject({ code: 'PAYMENT_AMOUNT' });
+    await expect(sut.createPaymentMandateDraft({ ...base, paymentAmount: { amountMinor: 3150, currency: 'USD' }, paymentInstrument: { id: 'instrument_001', type: 'card', descriptionMasked: 'Card •••• 1234', token: 'real-token' } } as never)).rejects.toMatchObject({ code: 'MANDATE_INPUT' });
+    await expect(sut.createCheckoutMandateDraft({ checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_001', userReference: 'user_001', nonce: 'nonce_checkout', issuedAt, expiresAt })).rejects.toMatchObject({ code: 'MANDATE_REPLAY' });
+    await expect(sut.createCheckoutMandateDraft({ checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_001', userReference: 'user_001', nonce: 'nonce_late', issuedAt: '2020-01-01T00:00:00Z', expiresAt: '2020-01-01T00:10:00Z' })).rejects.toMatchObject({ code: 'MANDATE_EXPIRED' });
+  });
+
+  it('does not permit the local signer in production', async () => {
+    await expect(createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'production' })).rejects.toMatchObject({ code: 'MERCHANT_SIGNER_ENV' });
+  });
+});
+
+const tempDirectories: string[] = [];
+afterEach(async () => { await Promise.all(tempDirectories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+
+describe('mandates:create CLI handler', () => {
+  it('generates checkout and payment drafts from a safe fixture', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'mandates-')); tempDirectories.push(dir);
+    const fixture = { ...input(), userReference: 'user_001', checkoutMandate: { nonce: 'fixture_checkout_nonce', issuedAt, expiresAt }, paymentMandate: { checkoutNonce: 'fixture_payment_nonce', issuedAt, expiresAt, payee: { id: 'merchant_001', name: 'Merchant', website: 'https://merchant.example' }, paymentAmount: { amountMinor: 3150, currency: 'USD' }, paymentInstrument: { id: 'instrument_001', type: 'card', descriptionMasked: 'Card •••• 1234' } } };
+    const fixturePath = path.join(dir, 'checkout.json'); await writeFile(fixturePath, JSON.stringify(fixture));
+    const result = await createMandatesFromFile(fixturePath, { NODE_ENV: 'test' });
+    expect(result.checkoutDraft.mandateType).toBe('checkout'); expect(result.paymentDraft?.mandateType).toBe('payment');
+    expect(result.checkout.checkoutJwt).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(JSON.parse(await readFile(fixturePath, 'utf8')).merchant.id).toBe('merchant_001');
+  });
+});

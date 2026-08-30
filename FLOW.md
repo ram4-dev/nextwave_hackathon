@@ -6,9 +6,9 @@
 
 | En alcance | Fuera de alcance |
 | --- | --- |
-| Ceremonia de identidad (persona ↔ agente local ↔ KYA) | Flujo comercial del merchant |
+| Ceremonia de identidad (persona ↔ agente local ↔ KYA); drafts AP2 locales sin firma | Flujo comercial live del merchant |
 | Enrollment, credencial KYA, autenticación del agente | Pagos y liquidación |
-| Binding Principal ID + ERC-8004 + clave local | AP2 y cualquier protocolo de pago |
+| Binding Principal ID + ERC-8004 + clave local | Pagos, tokenización, captura/liquidación y firma automática |
 | Consumo del Identity Registry curated | Deploy de registry propio; Hardhat/Foundry en runtime |
 
 **Actores de la ceremonia (4):** Usuario · Agente local · Plataforma KYA · Proveedor KYC.  
@@ -293,7 +293,7 @@ Credencial **copiada es inútil** sin la clave privada local.
 - [ ] Auth: nonce + audience + timestamp + intent hash firmado (`jose` ES256).
 - [ ] Transfer: suspende hasta Principal verificado activo + aprobación explícita; KYC solo si falta o expiró.
 - [ ] Cambio de PC: nueva clave + revocación; KYC solo si política/expiración.
-- [ ] Merchant/pagos/AP2 no aparecen en este flujo.
+- [x] Drafts AP2 locales: Checkout JWT ES256 y solicitudes de firma futuras; sin pago ni mandato final.
 - [ ] Direcciones curated reverificadas antes de integrar/promover.
 
 ---
