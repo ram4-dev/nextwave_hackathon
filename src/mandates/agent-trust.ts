@@ -41,24 +41,46 @@ export class KyaAgentTrustVerifier implements AgentTrustVerifier {
     const store = await this.repo.getStore();
     const agent = store.enrollments.find((item) => item.agentUuid === input.agentId || item.agentId === input.agentId);
     const reasons: string[] = [];
-    if (!agent) return { allowed: false, agentStatus: 'missing', attestationStatus: 'missing', keyBindingStatus: 'missing', riskLevel: 'unknown', revocationStatus: 'revoked', policyVersion: this.options.policyVersion, reasons: ['AGENT_NOT_FOUND'] };
-    const credential = store.credentials.find((item) => item.agentUuid === agent.agentUuid && item.status === 'active');
-    const attestationStatus = !credential ? 'missing' : new Date(credential.expiresAt).getTime() <= now.getTime() ? 'expired' : 'valid';
+    if (!agent) {
+      return {
+        allowed: false, agentStatus: 'missing', attestationStatus: 'missing', keyBindingStatus: 'missing',
+        riskLevel: 'unknown', revocationStatus: 'revoked', policyVersion: this.options.policyVersion, reasons: ['AGENT_NOT_FOUND'],
+      };
+    }
+    // Credential must belong to the same principal and thumbprint as the enrollment — never any active agent credential.
+    const credential = store.credentials.find(
+      (item) => item.agentUuid === agent.agentUuid
+        && item.principalId === agent.principalId
+        && item.thumbprint === agent.thumbprint
+        && item.status === 'active',
+    );
+    const attestationStatus = !credential
+      ? 'missing'
+      : new Date(credential.expiresAt).getTime() <= now.getTime() ? 'expired' : 'valid';
     if (agent.status !== 'bound') reasons.push(agent.status === 'revoked' ? 'AGENT_REVOKED' : 'AGENT_NOT_ACTIVE');
     if (attestationStatus !== 'valid') reasons.push(`ATTESTATION_${attestationStatus.toUpperCase()}`);
     const expectedThumbprint = agent.thumbprint;
     const providedThumbprint = await calculateJwkThumbprint(input.publicKeyJwk, 'sha256').catch(() => 'invalid');
     const keyBindingStatus = expectedThumbprint === providedThumbprint ? 'bound' : 'mismatch';
     if (keyBindingStatus !== 'bound') reasons.push('AGENT_KEY_MISMATCH');
-    // KYA has no tenant authorization model. Absence of an explicit adapter is deny-by-default.
-    const tenantAllowed = this.options.isTenantAuthorized ? await this.options.isTenantAuthorized({ agentUuid: agent.agentUuid, tenantId: input.tenantId }) : false;
+    const tenantAllowed = this.options.isTenantAuthorized
+      ? await this.options.isTenantAuthorized({ agentUuid: agent.agentUuid, tenantId: input.tenantId })
+      : false;
     if (!tenantAllowed) reasons.push('TENANT_NOT_AUTHORIZED');
-    const riskLevel = this.options.riskLevel ? await this.options.riskLevel({ agentUuid: agent.agentUuid, tenantId: input.tenantId }) : 'high';
+    const riskLevel = this.options.riskLevel
+      ? await this.options.riskLevel({ agentUuid: agent.agentUuid, tenantId: input.tenantId })
+      : 'high';
     if (riskLevel !== 'low') reasons.push('RISK_NOT_LOW');
     return {
-      allowed: reasons.length === 0, agentStatus: agent.status, attestationStatus, keyBindingStatus, riskLevel,
+      allowed: reasons.length === 0,
+      agentStatus: agent.status,
+      attestationStatus,
+      keyBindingStatus,
+      riskLevel,
       revocationStatus: agent.status === 'revoked' ? 'revoked' : agent.status === 'suspended' ? 'suspended' : 'active',
-      expiresAt: credential?.expiresAt, policyVersion: this.options.policyVersion, reasons,
+      expiresAt: credential?.expiresAt,
+      policyVersion: this.options.policyVersion,
+      reasons,
     };
   }
 }

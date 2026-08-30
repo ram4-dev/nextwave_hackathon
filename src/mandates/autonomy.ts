@@ -1,15 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { CompactSign, compactVerify, exportJWK, generateKeyPair, importJWK } from 'jose';
+import { CompactSign, compactVerify, calculateJwkThumbprint, decodeProtectedHeader, exportJWK, generateKeyPair, importJWK } from 'jose';
+import { z } from 'zod';
 import { DomainError } from '../domain/state-machine.js';
 import { assertTrustedAgent, type AgentTrustVerifier } from './agent-trust.js';
-import { freezeConstraints, openMandatePayload, openMandatePayloadHash } from './canonical.js';
-import { checkoutHash } from './canonical.js';
+import { canonicalJson, checkoutHash, freezeConstraints, openMandatePayload, openMandatePayloadHash, sha256Base64Url } from './canonical.js';
 import {
   createSupabaseMandatePolicyLedger,
   InMemoryMandatePolicyLedger,
   MandatePolicyEvaluator,
   type MandatePolicyLedger,
   type OpenMandateActivationProof,
+  type OpenMandateConstraints,
   type OpenMandateRecord,
 } from './policy.js';
 import type { CheckoutSnapshot, MerchantSigner } from './types.js';
@@ -30,12 +31,13 @@ export async function createTestAgentMandateSigner(nodeEnv: string): Promise<Age
   if (nodeEnv !== 'test') throw new DomainError('Test agent signer is restricted to NODE_ENV=test', 'AGENT_SIGNER_ENV');
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
   const publicKeyJwk = await exportJWK(publicKey);
+  const keyId = `test-agent-${randomUUID()}`;
   return {
-    keyId: `test-agent-${randomUUID()}`,
+    keyId,
     publicKeyJwk,
     async sign(payload) {
       return new CompactSign(new TextEncoder().encode(JSON.stringify(payload)))
-        .setProtectedHeader({ alg: 'ES256', typ: 'JWT' })
+        .setProtectedHeader({ alg: 'ES256', typ: 'JWT', kid: keyId })
         .sign(privateKey);
     },
     async verify(jws) {
@@ -45,12 +47,75 @@ export async function createTestAgentMandateSigner(nodeEnv: string): Promise<Age
   };
 }
 
-export type OpenMandateCreateInput = Omit<OpenMandateRecord, 'id' | 'status' | 'canonicalPayloadHash' | 'userSignature' | 'activationProof'>;
+const opaqueId = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/);
+const utcDate = z.string().datetime({ offset: true }).refine((value) => value.endsWith('Z'));
+const publicJwkSchema = z.object({
+  kty: z.literal('EC'),
+  crv: z.literal('P-256'),
+  x: z.string().min(1),
+  y: z.string().min(1),
+  kid: z.string().min(1).optional(),
+  alg: z.string().optional(),
+  use: z.string().optional(),
+}).strict().superRefine((value, ctx) => {
+  if ('d' in value) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'private key material forbidden' });
+});
+
+const constraintsSchema = z.object({
+  merchantIds: z.array(opaqueId).min(1),
+  payeeIds: z.array(opaqueId).min(1),
+  productIds: z.array(opaqueId).optional(),
+  supplierIds: z.array(opaqueId).optional(),
+  maxQuantityPerProduct: z.number().int().positive().finite(),
+  minAmountMinor: z.number().int().nonnegative().finite(),
+  maxAmountMinor: z.number().int().positive().finite(),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  totalBudgetMinor: z.number().int().nonnegative().finite(),
+  maxOperations: z.number().int().positive().finite(),
+  frequencyWindowSeconds: z.number().int().positive().finite(),
+  maxOperationsPerWindow: z.number().int().positive().finite(),
+  paymentInstrumentAlias: opaqueId,
+  allowedPisp: opaqueId.optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.minAmountMinor > value.maxAmountMinor) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'minAmountMinor exceeds maxAmountMinor' });
+  }
+});
+
+const openMandateCreateSchema = z.object({
+  type: z.enum(['checkout', 'payment']),
+  tenantId: opaqueId,
+  userReference: opaqueId,
+  agentId: opaqueId,
+  agentPublicKeyJwk: publicJwkSchema,
+  constraints: constraintsSchema,
+  issuedAt: utcDate,
+  expiresAt: utcDate,
+  audience: opaqueId,
+  nonce: opaqueId.max(512),
+}).strict().superRefine((value, ctx) => {
+  if (Date.parse(value.expiresAt) <= Date.parse(value.issuedAt)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'expiresAt must be after issuedAt' });
+  }
+});
+
+export type OpenMandateCreateInput = Omit<z.input<typeof openMandateCreateSchema>, 'agentPublicKeyJwk'> & {
+  agentPublicKeyJwk: JsonWebKey;
+};
+
+function parseOpenMandateCreate(input: OpenMandateCreateInput): z.infer<typeof openMandateCreateSchema> {
+  try {
+    return openMandateCreateSchema.parse(input);
+  } catch (error) {
+    throw new DomainError(`Invalid open mandate input: ${(error as z.ZodError).message}`, 'OPEN_MANDATE_INPUT');
+  }
+}
 
 export interface OpenMandateRegistry {
+  /** Shared in-process policy ledger for this registry scope, when available. */
+  readonly policyLedger?: MandatePolicyLedger;
   create(input: OpenMandateCreateInput): OpenMandateRecord;
   get(id: string): OpenMandateRecord;
-  /** Load an active mandate from the store boundary; rejects fabricated caller records. */
   getAuthorizedActive(input: {
     id: string;
     userReference: string;
@@ -65,6 +130,8 @@ export interface OpenMandateRegistry {
     expectedPayloadHash: string;
     verifier: TrustedSurfaceSignatureVerifier;
     proof?: Omit<OpenMandateActivationProof, 'signature' | 'payloadHash' | 'activatedAt'> & { activatedAt?: string };
+    /** Runs inside the activation critical section before status becomes active. Failure leaves mandate awaiting signature. */
+    persistProof?: (proof: OpenMandateActivationProof) => Promise<void>;
     now?: Date;
   }): Promise<OpenMandateRecord>;
   revoke(id: string): OpenMandateRecord;
@@ -74,17 +141,53 @@ function cloneRecord(record: OpenMandateRecord): OpenMandateRecord {
   return structuredClone(record);
 }
 
+async function publicJwkThumbprint(jwk: JsonWebKey): Promise<string> {
+  const publicOnly = { ...jwk } as JsonWebKey;
+  delete (publicOnly as Record<string, unknown>).d;
+  return calculateJwkThumbprint(publicOnly, 'sha256');
+}
+
+export async function verifyClosedMandateJws(input: {
+  jws: string;
+  publicKeyJwk: JsonWebKey;
+  expectedPayload: Record<string, unknown>;
+  expectedKeyId?: string;
+}): Promise<Record<string, unknown>> {
+  const header = decodeProtectedHeader(input.jws);
+  if (header.alg !== 'ES256') throw new DomainError('Closed mandate JWS alg must be ES256', 'CLOSED_MANDATE_JWS');
+  if (input.expectedKeyId && header.kid !== undefined && header.kid !== input.expectedKeyId) {
+    throw new DomainError('Closed mandate JWS kid mismatch', 'CLOSED_MANDATE_JWS');
+  }
+  const key = await importJWK({ ...input.publicKeyJwk, d: undefined } as JsonWebKey, 'ES256');
+  let payloadBytes: Uint8Array;
+  try {
+    const verified = await compactVerify(input.jws, key);
+    payloadBytes = verified.payload;
+  } catch {
+    throw new DomainError('Closed mandate JWS signature invalid', 'CLOSED_MANDATE_JWS');
+  }
+  const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Record<string, unknown>;
+  if (sha256Base64Url(canonicalJson(payload)) !== sha256Base64Url(canonicalJson(input.expectedPayload))) {
+    throw new DomainError('Closed mandate JWS payload mismatch', 'CLOSED_MANDATE_JWS');
+  }
+  return payload;
+}
+
 export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
   private readonly records = new Map<string, OpenMandateRecord>();
   private lock: Promise<unknown> = Promise.resolve();
+  /** Shared across all autonomous closures that use this registry without an injected ledger. */
+  readonly policyLedger = new InMemoryMandatePolicyLedger();
 
   create(input: OpenMandateCreateInput): OpenMandateRecord {
-    const frozenConstraints = freezeConstraints(input.constraints);
+    const checked = parseOpenMandateCreate(input);
+    const frozenConstraints = freezeConstraints(checked.constraints as OpenMandateConstraints);
     const id = `open_${randomUUID().replace(/-/g, '')}`;
     const draft: OpenMandateRecord = {
-      ...structuredClone({ ...input, constraints: frozenConstraints }),
+      ...structuredClone({ ...checked, constraints: frozenConstraints }),
       id,
       constraints: frozenConstraints,
+      agentPublicKeyJwk: checked.agentPublicKeyJwk as JsonWebKey,
       canonicalPayloadHash: '',
       status: 'awaiting_user_signature',
     };
@@ -115,8 +218,16 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
     if (record.agentId !== input.agentId) throw new DomainError('Open mandate agent mismatch', 'OPEN_MANDATE_AGENT');
     if (record.tenantId !== input.tenantId) throw new DomainError('Open mandate tenant mismatch', 'OPEN_MANDATE_TENANT');
     if (record.audience !== input.audience) throw new DomainError('Open mandate audience mismatch', 'OPEN_MANDATE_AUDIENCE');
-    if (!record.activationProof || record.activationProof.payloadHash !== record.canonicalPayloadHash) {
+    const proof = record.activationProof;
+    if (!proof || proof.payloadHash !== record.canonicalPayloadHash) {
       throw new DomainError('Open mandate activation proof missing or unbound', 'OPEN_MANDATE_PROOF');
+    }
+    if (proof.signature !== record.userSignature) {
+      throw new DomainError('Open mandate activation proof signature mismatch', 'OPEN_MANDATE_PROOF');
+    }
+    const activatedAt = Date.parse(proof.activatedAt);
+    if (!Number.isFinite(activatedAt) || activatedAt > now.getTime() + 1000) {
+      throw new DomainError('Open mandate activation proof timestamp invalid', 'OPEN_MANDATE_PROOF');
     }
     if (openMandatePayloadHash(record) !== record.canonicalPayloadHash) {
       throw new DomainError('Open mandate payload hash integrity failure', 'OPEN_MANDATE_HASH');
@@ -130,6 +241,7 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
     expectedPayloadHash: string;
     verifier: TrustedSurfaceSignatureVerifier;
     proof?: Omit<OpenMandateActivationProof, 'signature' | 'payloadHash' | 'activatedAt'> & { activatedAt?: string };
+    persistProof?: (proof: OpenMandateActivationProof) => Promise<void>;
     now?: Date;
   }): Promise<OpenMandateRecord> {
     const run = this.lock.then(async () => {
@@ -157,17 +269,23 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
       if (!valid) throw new DomainError('Trusted Surface signature invalid', 'USER_SIGNATURE_INVALID');
 
       const activatedAt = input.proof?.activatedAt ?? now.toISOString();
+      const activationProof: OpenMandateActivationProof = {
+        signature: input.signature,
+        payloadHash: stored.canonicalPayloadHash,
+        activatedAt,
+        challengeId: input.proof?.challengeId,
+        ownerAddress: input.proof?.ownerAddress,
+      };
+
+      // Persist proof inside the critical section before committing active status.
+      // Local in-memory atomicity only — durable production must share one DB transaction.
+      if (input.persistProof) await input.persistProof(activationProof);
+
       const next: OpenMandateRecord = {
         ...cloneRecord(stored),
         status: 'active',
         userSignature: input.signature,
-        activationProof: {
-          signature: input.signature,
-          payloadHash: stored.canonicalPayloadHash,
-          activatedAt,
-          challengeId: input.proof?.challengeId,
-          ownerAddress: input.proof?.ownerAddress,
-        },
+        activationProof,
       };
       this.records.set(input.id, next);
       return cloneRecord(next);
@@ -209,10 +327,21 @@ function parseCheckout(value: CheckoutSnapshot & Record<string, unknown>): Check
   return checkout as CheckoutSnapshot;
 }
 
+function resolvePolicyLedger(input: {
+  policyLedger?: MandatePolicyLedger;
+  registry: OpenMandateRegistry;
+}): MandatePolicyLedger {
+  if (input.policyLedger) return input.policyLedger;
+  if (input.registry.policyLedger) return input.registry.policyLedger;
+  if (process.env.NODE_ENV === 'production') return createSupabaseMandatePolicyLedger();
+  throw new DomainError(
+    'policyLedger is required when the registry does not expose a shared in-process ledger',
+    'POLICY_LEDGER_REQUIRED',
+  );
+}
+
 export async function createAutonomousClosedMandates(input: {
-  /** Authorized open checkout mandate id loaded from the registry/store boundary. */
   openCheckoutMandateId: string;
-  /** Authorized open payment mandate id loaded from the registry/store boundary. */
   openPaymentMandateId: string;
   registry: OpenMandateRegistry;
   userReference: string;
@@ -251,6 +380,16 @@ export async function createAutonomousClosedMandates(input: {
   if (openCheckoutMandate.type !== 'checkout' || openPaymentMandate.type !== 'payment') {
     throw new DomainError('Open mandate type mismatch', 'OPEN_MANDATE_TYPE');
   }
+  if (input.agentKeyReference !== input.agentSigner.keyId) {
+    throw new DomainError('Agent key reference does not match signer key id', 'AGENT_KEY_REFERENCE');
+  }
+  const signerThumbprint = await publicJwkThumbprint(input.agentSigner.publicKeyJwk);
+  const checkoutCnf = await publicJwkThumbprint(openCheckoutMandate.agentPublicKeyJwk);
+  const paymentCnf = await publicJwkThumbprint(openPaymentMandate.agentPublicKeyJwk);
+  if (signerThumbprint !== checkoutCnf || signerThumbprint !== paymentCnf) {
+    throw new DomainError('Agent signer JWK does not match open mandate cnf', 'AGENT_KEY_CNF');
+  }
+
   if (checkoutHash(input.checkoutJwt) !== input.checkoutHash) throw new DomainError('Checkout hash mismatch', 'CHECKOUT_HASH');
   const checkout = parseCheckout(await input.merchantSigner.verifyCheckout(input.checkoutJwt) as CheckoutSnapshot & Record<string, unknown>);
   if (checkout.transactionId !== input.transactionId) throw new DomainError('Checkout transaction mismatch', 'CHECKOUT_TRANSACTION');
@@ -275,9 +414,7 @@ export async function createAutonomousClosedMandates(input: {
   });
   evaluator.assertAllowed(policy);
 
-  const ledger = input.policyLedger ?? (process.env.NODE_ENV === 'production'
-    ? createSupabaseMandatePolicyLedger()
-    : new InMemoryMandatePolicyLedger());
+  const ledger = resolvePolicyLedger(input);
 
   await ledger.reserve({
     checkoutMandateId: openCheckoutMandate.id,
@@ -318,7 +455,20 @@ export async function createAutonomousClosedMandates(input: {
       input.agentSigner.sign(checkoutPayload),
       input.agentSigner.sign(paymentPayload),
     ]);
-    await Promise.all([input.agentSigner.verify(closedCheckoutJws), input.agentSigner.verify(closedPaymentJws)]);
+    await Promise.all([
+      verifyClosedMandateJws({
+        jws: closedCheckoutJws,
+        publicKeyJwk: input.agentSigner.publicKeyJwk,
+        expectedPayload: checkoutPayload,
+        expectedKeyId: input.agentSigner.keyId,
+      }),
+      verifyClosedMandateJws({
+        jws: closedPaymentJws,
+        publicKeyJwk: input.agentSigner.publicKeyJwk,
+        expectedPayload: paymentPayload,
+        expectedKeyId: input.agentSigner.keyId,
+      }),
+    ]);
     return {
       status: 'verified' as const,
       closedCheckoutJws,
