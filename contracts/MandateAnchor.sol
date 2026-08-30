@@ -39,7 +39,15 @@ contract MandateAnchor is AccessControl, Pausable {
         bytes32 policyVersionHash,
         uint8 mandateType
     ) external onlyRole(ANCHORER_ROLE) whenNotPaused {
-        require(closedCheckoutHash != bytes32(0) && closedPaymentHash != bytes32(0), "empty evidence");
+        require(
+            closedCheckoutHash != bytes32(0)
+                && closedPaymentHash != bytes32(0)
+                && checkoutHash != bytes32(0)
+                && transactionIdHash != bytes32(0)
+                && agentIdHash != bytes32(0)
+                && policyVersionHash != bytes32(0),
+            "empty evidence"
+        );
         require(!anchored[closedCheckoutHash] && !anchored[closedPaymentHash], "already anchored");
         anchored[closedCheckoutHash] = true;
         anchored[closedPaymentHash] = true;

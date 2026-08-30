@@ -1,5 +1,9 @@
 import { DomainError } from '../domain/state-machine.js';
 
+const BASE64URL_SHA256 = /^[A-Za-z0-9_-]{43}$/;
+const BYTES32_HEX = /^0x[0-9a-fA-F]{64}$/;
+const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+
 export type MandateAnchorJob = {
   id: string;
   closedCheckoutHash: string;
@@ -10,14 +14,25 @@ export type MandateAnchorJob = {
   policyVersionHash: string;
   mandateType: number;
   attempts: number;
-  status: 'pending' | 'anchored' | 'failed';
+  status: 'pending' | 'processing' | 'anchored' | 'failed';
   lastError?: string;
+  txHash?: string;
+  leaseUntil?: string;
   createdAt: string;
   updatedAt: string;
   anchoredAt?: string;
 };
 
-export type MandateAnchorEvidence = Omit<MandateAnchorJob, 'id' | 'attempts' | 'status' | 'lastError' | 'createdAt' | 'updatedAt' | 'anchoredAt'>;
+export type MandateAnchorEvidence = Pick<
+  MandateAnchorJob,
+  | 'closedCheckoutHash'
+  | 'closedPaymentHash'
+  | 'checkoutHash'
+  | 'transactionIdHash'
+  | 'agentIdHash'
+  | 'policyVersionHash'
+  | 'mandateType'
+>;
 
 /** Injectable chain boundary. Fake implementations never write to a real RPC. */
 export interface MandateAnchorClient {
@@ -32,6 +47,10 @@ export interface MandateAnchorOutbox {
   get(id: string): Promise<MandateAnchorJob>;
 }
 
+export function isStrictEvidenceHash(value: string): boolean {
+  return BASE64URL_SHA256.test(value) || BYTES32_HEX.test(value);
+}
+
 function assertHashOnly(evidence: MandateAnchorEvidence): void {
   const values = [
     evidence.closedCheckoutHash,
@@ -42,12 +61,8 @@ function assertHashOnly(evidence: MandateAnchorEvidence): void {
     evidence.policyVersionHash,
   ];
   for (const value of values) {
-    if (typeof value !== 'string' || value.length < 16) {
-      throw new DomainError('Anchor evidence must be opaque hashes only', 'ANCHOR_EVIDENCE');
-    }
-    // Reject obvious plaintext payloads (JWT-like, prompts, long free text).
-    if (value.includes('.') || value.includes(' ') || value.length > 128) {
-      throw new DomainError('Anchor evidence must be opaque hashes only', 'ANCHOR_EVIDENCE');
+    if (typeof value !== 'string' || !isStrictEvidenceHash(value)) {
+      throw new DomainError('Anchor evidence must be SHA-256 base64url (43) or bytes32 hex', 'ANCHOR_EVIDENCE');
     }
   }
   if (!Number.isInteger(evidence.mandateType) || evidence.mandateType < 0 || evidence.mandateType > 255) {
@@ -60,6 +75,8 @@ export class InMemoryMandateAnchorOutbox implements MandateAnchorOutbox {
   private readonly byEvidence = new Map<string, string>();
   private lock: Promise<unknown> = Promise.resolve();
   private seq = 0;
+
+  constructor(private readonly options: { leaseMs?: number; maxAttempts?: number } = {}) {}
 
   private evidenceKey(evidence: MandateAnchorEvidence): string {
     return `${evidence.closedCheckoutHash}:${evidence.closedPaymentHash}`;
@@ -88,11 +105,15 @@ export class InMemoryMandateAnchorOutbox implements MandateAnchorOutbox {
   }
 
   async claimNext(now = new Date()): Promise<MandateAnchorJob | undefined> {
-    void now;
+    const leaseMs = this.options.leaseMs ?? 30_000;
     const run = this.lock.then(() => {
       for (const job of this.jobs.values()) {
-        if (job.status === 'pending') {
+        const leaseExpired = job.leaseUntil ? Date.parse(job.leaseUntil) <= now.getTime() : true;
+        const reclaimable = job.status === 'processing' && leaseExpired;
+        if (job.status === 'pending' || reclaimable) {
+          job.status = 'processing';
           job.attempts += 1;
+          job.leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
           job.updatedAt = now.toISOString();
           return structuredClone(job);
         }
@@ -104,23 +125,32 @@ export class InMemoryMandateAnchorOutbox implements MandateAnchorOutbox {
   }
 
   async markAnchored(id: string, txHash: string, now = new Date()): Promise<MandateAnchorJob> {
+    if (!TX_HASH.test(txHash)) throw new DomainError('Anchor txHash must be bytes32 hex', 'ANCHOR_TXHASH');
     const job = this.jobs.get(id);
     if (!job) throw new DomainError('Anchor job not found', 'ANCHOR_NOT_FOUND');
     if (job.status === 'anchored') return structuredClone(job);
     job.status = 'anchored';
+    job.txHash = txHash;
     job.anchoredAt = now.toISOString();
     job.updatedAt = now.toISOString();
+    job.leaseUntil = undefined;
     job.lastError = undefined;
-    void txHash;
     return structuredClone(job);
   }
 
   async markFailed(id: string, error: string, now = new Date()): Promise<MandateAnchorJob> {
+    const maxAttempts = this.options.maxAttempts ?? 5;
     const job = this.jobs.get(id);
     if (!job) throw new DomainError('Anchor job not found', 'ANCHOR_NOT_FOUND');
-    job.status = job.attempts >= 5 ? 'failed' : 'pending';
     job.lastError = error;
     job.updatedAt = now.toISOString();
+    if (job.attempts >= maxAttempts) {
+      job.status = 'failed';
+      job.leaseUntil = undefined;
+    } else {
+      job.status = 'pending';
+      job.leaseUntil = undefined;
+    }
     return structuredClone(job);
   }
 
@@ -137,7 +167,8 @@ export class FakeMandateAnchorClient implements MandateAnchorClient {
   async anchor(evidence: MandateAnchorEvidence): Promise<{ txHash: string }> {
     assertHashOnly(evidence);
     this.anchored.push(structuredClone(evidence));
-    return { txHash: `0xfake${this.anchored.length.toString(16).padStart(8, '0')}` };
+    const n = this.anchored.length.toString(16).padStart(64, '0');
+    return { txHash: `0x${n}` };
   }
 }
 
@@ -152,6 +183,10 @@ export class MandateAnchorWorker {
     const now = this.options.now?.() ?? new Date();
     const job = await this.outbox.claimNext(now);
     if (!job) return undefined;
+    const maxAttempts = this.options.maxAttempts ?? 5;
+    if (job.attempts > maxAttempts) {
+      return this.outbox.markFailed(job.id, 'max attempts exceeded', now);
+    }
     try {
       const result = await this.client.anchor({
         closedCheckoutHash: job.closedCheckoutHash,

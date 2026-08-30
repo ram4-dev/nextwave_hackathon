@@ -70,6 +70,13 @@ describe('MandateAnchor', () => {
     await assert.rejects(contract.write.anchor(evidence, { account: outsider.account }));
   });
 
+  it('rejects zero hashes for every evidence field', async () => {
+    const { contract, anchorer } = await deploy();
+    const withZero = [...evidence];
+    withZero[2] = '0x'.padEnd(66, '0');
+    await assert.rejects(contract.write.anchor(withZero as typeof evidence, { account: anchorer.account }));
+  });
+
   it('rejects constructor when admin equals anchorer', async () => {
     const { viem } = await network.connect();
     const [admin, pauser] = await viem.getWalletClients();
