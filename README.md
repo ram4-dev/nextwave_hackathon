@@ -83,6 +83,7 @@ npm run typecheck
 npm test
 npm run build
 npm run demo:ceremony
+npm run demo:purchase
 ```
 
 ## AP2 mandate drafts (phase 1)
@@ -97,6 +98,12 @@ The input fixture is intentionally fake. `MERCHANT_SIGNING_PRIVATE_JWK` may prov
 
 See [`docs/AP2_MANDATES.md`](./docs/AP2_MANDATES.md) for flow and integration boundaries.
 For the local JSON data model and the configuration needed before a blockchain anchor, see [`docs/AP2_IMPLEMENTATION_SETUP.md`](./docs/AP2_IMPLEMENTATION_SETUP.md).
+
+## AP2 purchase demo
+
+`npm run demo:purchase` is the complete offline demonstration: it creates a KYA-bound demo agent, signs a merchant checkout, obtains two explicit EIP-712 approvals, evaluates trust/policy, and emits closed-mandate hashes. It performs no merchant, Yuno, Supabase, or blockchain write.
+
+In `KYA_MODE=demo`, the same flow is reachable over the protected `/v1/mandates/*` routes. These routes are intentionally process-local and demo-only: they use a demo ES256 agent signer, a local merchant signer, in-memory mandates/policies, and explicit demo tenant/risk adapters. They must not be enabled for production.
 
 ## License
 

@@ -96,10 +96,10 @@ export class CeremonyService {
     fingerprintDisplay: string;
     agentUriUrl: string;
   }> {
-    const publicJwk = sanitizePublicJwk({ ...input.publicJwk });
-    if ((publicJwk as Record<string, unknown>).d) {
+    if ((input.publicJwk as Record<string, unknown>).d) {
       throw new DomainError('Private key material rejected', 'PII_FORBIDDEN');
     }
+    const publicJwk = sanitizePublicJwk({ ...input.publicJwk });
     const thumbprint = await thumbprintFromJwk(publicJwk);
     const agentUuid = newId('agent');
     const deviceCode = generateDeviceCode();
@@ -146,6 +146,33 @@ export class CeremonyService {
       throw new DomainError('Forbidden', 'FORBIDDEN');
     }
     return enrollment;
+  }
+
+  /** Bind a distinct, public-only AP2 mandate-signing key to an active KYA agent. */
+  async bindMandateSigningKey(
+    agentUuid: string,
+    ownerAddress: `0x${string}`,
+    input: { publicJwk: JsonWebKey; keyId: string },
+  ): Promise<AgentEnrollment> {
+    if (!input.keyId.trim() || input.keyId.length > 300) throw new DomainError('Invalid mandate signing key ID', 'MANDATE_SIGNING_KEY');
+    if ((input.publicJwk as Record<string, unknown>).d) throw new DomainError('Private mandate key material rejected', 'PRIVATE_KEY_PERSISTENCE');
+    const publicJwk = sanitizePublicJwk({ ...input.publicJwk });
+    const thumbprint = await thumbprintFromJwk(publicJwk);
+    return this.repo.withLock(async (store) => {
+      const enrollment = store.enrollments.find((item) => item.agentUuid === agentUuid);
+      if (!enrollment) throw new DomainError('Enrollment not found', 'NOT_FOUND');
+      if (enrollment.status !== 'bound') throw new DomainError('Agent must be bound before a mandate key can be delegated', 'NOT_BOUND');
+      if (thumbprint === enrollment.thumbprint) throw new DomainError('Mandate signing key must be distinct from the agent identity key', 'MANDATE_SIGNING_KEY_SEPARATION');
+      const principal = store.principals.find((item) => item.id === enrollment.principalId);
+      if (!principal || principal.ownerAddress.toLowerCase() !== ownerAddress.toLowerCase()) throw new DomainError('Principal mismatch', 'FORBIDDEN');
+      if (!canAuthorizeAgent(principal)) throw new DomainError('Principal KYC not active', 'KYC_REQUIRED');
+      enrollment.mandateSigningPublicJwk = publicJwk;
+      enrollment.mandateSigningThumbprint = thumbprint;
+      enrollment.mandateSigningKeyId = input.keyId;
+      enrollment.mandateSigningBoundAt = new Date().toISOString();
+      enrollment.updatedAt = new Date().toISOString();
+      return structuredClone(enrollment);
+    });
   }
 
   /** Public resolver — no PII, principalId, or deviceCode. */

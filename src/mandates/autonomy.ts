@@ -35,6 +35,27 @@ export async function createTestAgentMandateSigner(nodeEnv: string): Promise<Age
   };
 }
 
+/**
+ * Demo-only in-memory signer. Its public JWK must be the JWK enrolled in KYA;
+ * otherwise KyaAgentTrustVerifier will correctly reject the closed mandate.
+ */
+export async function createDemoAgentMandateSigner(kyaMode: string): Promise<AgentMandateSigner> {
+  if (kyaMode !== 'demo') throw new DomainError('Demo agent signer is restricted to KYA_MODE=demo', 'AGENT_SIGNER_ENV');
+  const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
+  const publicKeyJwk = await exportJWK(publicKey);
+  return {
+    keyId: `demo-agent-${randomUUID()}`, publicKeyJwk,
+    async sign(payload) {
+      return new CompactSign(new TextEncoder().encode(JSON.stringify(payload)))
+        .setProtectedHeader({ alg: 'ES256', typ: 'JWT' }).sign(privateKey);
+    },
+    async verify(jws) {
+      const verified = await compactVerify(jws, await importJWK(publicKeyJwk, 'ES256'));
+      return JSON.parse(new TextDecoder().decode(verified.payload)) as Record<string, unknown>;
+    },
+  };
+}
+
 export class InMemoryOpenMandateRegistry {
   private readonly records = new Map<string, OpenMandateRecord>();
   create(input: Omit<OpenMandateRecord, 'id' | 'status'>): OpenMandateRecord {

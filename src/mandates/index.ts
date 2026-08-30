@@ -212,4 +212,6 @@ export * from './types.js';
 export * from './agent-trust.js';
 export * from './policy.js';
 export * from './autonomy.js';
+export * from './agent-signer.js';
+export * from './anchor-worker.js';
 export * from './request-store.js';

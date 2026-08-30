@@ -32,6 +32,8 @@ export class KyaAgentTrustVerifier implements AgentTrustVerifier {
       policyVersion: string;
       isTenantAuthorized?: (input: { agentUuid: string; tenantId: string }) => Promise<boolean> | boolean;
       riskLevel?: (input: { agentUuid: string; tenantId: string }) => Promise<'low' | 'medium' | 'high'> | 'low' | 'medium' | 'high';
+      /** Require an explicitly delegated mandate key instead of falling back to the identity key. */
+      requireMandateSigningKey?: boolean;
       now?: () => Date;
     },
   ) {}
@@ -46,10 +48,13 @@ export class KyaAgentTrustVerifier implements AgentTrustVerifier {
     const attestationStatus = !credential ? 'missing' : new Date(credential.expiresAt).getTime() <= now.getTime() ? 'expired' : 'valid';
     if (agent.status !== 'bound') reasons.push(agent.status === 'revoked' ? 'AGENT_REVOKED' : 'AGENT_NOT_ACTIVE');
     if (attestationStatus !== 'valid') reasons.push(`ATTESTATION_${attestationStatus.toUpperCase()}`);
-    const expectedThumbprint = agent.thumbprint;
+    const hasDelegatedMandateKey = Boolean(agent.mandateSigningThumbprint && agent.mandateSigningKeyId);
+    if (this.options.requireMandateSigningKey && !hasDelegatedMandateKey) reasons.push('MANDATE_SIGNING_KEY_MISSING');
+    const expectedThumbprint = agent.mandateSigningThumbprint ?? agent.thumbprint;
     const providedThumbprint = await calculateJwkThumbprint(input.publicKeyJwk, 'sha256').catch(() => 'invalid');
     const keyBindingStatus = expectedThumbprint === providedThumbprint ? 'bound' : 'mismatch';
-    if (keyBindingStatus !== 'bound') reasons.push('AGENT_KEY_MISMATCH');
+    if (keyBindingStatus !== 'bound') reasons.push(hasDelegatedMandateKey ? 'MANDATE_SIGNING_KEY_MISMATCH' : 'AGENT_KEY_MISMATCH');
+    if (hasDelegatedMandateKey && agent.mandateSigningKeyId !== input.keyId) reasons.push('MANDATE_SIGNING_KEY_ID_MISMATCH');
     // KYA has no tenant authorization model. Absence of an explicit adapter is deny-by-default.
     const tenantAllowed = this.options.isTenantAuthorized ? await this.options.isTenantAuthorized({ agentUuid: agent.agentUuid, tenantId: input.tenantId }) : false;
     if (!tenantAllowed) reasons.push('TENANT_NOT_AUTHORIZED');

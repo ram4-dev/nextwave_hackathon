@@ -50,6 +50,11 @@ export interface AgentEnrollment {
   agentId?: string;
   owner?: `0x${string}`;
   agentUriPath: string;
+  /** Separately delegated ES256 public key authorized to sign AP2 mandates. */
+  mandateSigningPublicJwk?: JsonWebKey;
+  mandateSigningThumbprint?: string;
+  mandateSigningKeyId?: string;
+  mandateSigningBoundAt?: string;
   createdAt: string;
   updatedAt: string;
 }

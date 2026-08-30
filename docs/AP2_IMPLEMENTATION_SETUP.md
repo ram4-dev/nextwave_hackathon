@@ -58,3 +58,15 @@ En el frontend, presentar primero el resumen legible de límites, importe, moned
 ### Pendiente para producción
 
 El servicio EIP-712 y sus pruebas están listos, pero el `InMemoryOpenMandateRegistry` y `InMemoryTrustedSurfaceApprovalStore` son almacenamiento local. Antes de exponer la UI al usuario, reemplazarlos por tablas/RPC transaccionales de Supabase (mandatos, challenges y firmas) y conectar las dos operaciones a los handlers protegidos por `requireSession`. Así se conserva anti-replay y el cambio a `active` incluso con reinicios o varias instancias.
+
+## Firma de agente y evidencia BSC
+
+`createConfiguredAgentMandateSigner()` es el signer de mandatos para un proceso configurado: carga una JWK ES256 desde `MANDATE_SIGNING_PRIVATE_JWK` o desde un archivo inyectado por Vault/KMS. Reutiliza el patrón de carga segura de KYA, pero exige una clave distinta de la usada para credenciales KYA. El proveedor KMS/HSM concreto sigue siendo responsabilidad del runtime: no se debe montar una clave privada normal en producción si el proveedor ofrece una operación de firma remota.
+
+`createBscTestnetMandateAnchorWorker()` recibe únicamente mandatos cerrados ya verificados, vuelve a calcular los hashes SHA-256 desde los JWS/JWT originales, consulta `isAnchored`, y si hace falta llama a `MandateAnchor.anchor`. La lectura `isAnchored` de ambos hashes está disponible en `verifyMandateAnchorEvidence()`. El worker requiere `BSC_TESTNET_RPC_URL`, `MANDATE_ANCHOR_ADDRESS` y la clave de la cuenta que posee `ANCHORER_ROLE`; no reutilizar la cuenta administradora del contrato.
+
+### Secretos en Supabase Edge Functions
+
+El servidor Node lee variables con `process.env`; los secretos cargados en Supabase sólo están disponibles automáticamente dentro de una Edge Function, donde se leen con `Deno.env.get`. Por eso existe `supabase/functions/_shared/mandate-runtime-config.ts`, que lee y valida `MANDATE_SIGNING_PRIVATE_JWK`, `MANDATE_ANCHOR_ADDRESS`, `BSC_TESTNET_RPC_URL`, `MANDATE_ANCHORER_PRIVATE_KEY` y `MANDATE_WORKER_INTERNAL_KEY` sin registrarlos ni devolverlos al cliente. La función `mandate-anchor-worker` es por ahora un endpoint interno de readiness: no acepta mandatos arbitrarios para firmar o anclar hasta que exista el outbox durable.
+
+Para generar una clave de demo ES256/P-256 del agente, ejecuta `npm run generate:mandate-signing-jwk`. Su salida estándar contiene sólo la JWK privada para cargar como `MANDATE_SIGNING_PRIVATE_JWK`; la salida de error muestra el `kid` y la JWK pública que debe registrarse en KYA. No copies ninguna JWK privada a Git, logs o chat. Este generador es para demo; en producción el KMS/HSM debe crear y conservar la clave privada.

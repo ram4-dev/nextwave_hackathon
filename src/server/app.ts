@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { randomUUID } from 'node:crypto';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -14,7 +15,20 @@ import {
   verifySiwbLogin,
 } from '../auth/siwb.js';
 import { getJwks, verifyKyaCredential } from '../credentials/jws.js';
-import type { Hex } from 'viem';
+import { verifyTypedData, type Hex } from 'viem';
+import {
+  createAutonomousClosedMandates,
+  createDemoAgentMandateSigner,
+  createLocalMerchantSigner,
+  createMandateService,
+  Eip712TrustedSurfaceService,
+  InMemoryMandateReplayStore,
+  InMemoryOpenMandateRegistry,
+  InMemoryTrustedSurfaceApprovalStore,
+  KyaAgentTrustVerifier,
+  mandateApprovalTypes,
+  type OpenMandateConstraints,
+} from '../mandates/index.js';
 import {
   assertPaymasterRequestScoped,
   incrementPaymasterCapabilityUse,
@@ -28,6 +42,42 @@ type Variables = {
 export function createApp(repo: Repository, config: AppConfig) {
   const app = new Hono<{ Variables: Variables }>();
   const ceremony = new CeremonyService(repo, config);
+
+  // Deliberately demo-only: these stores and signing keys are process-local.
+  // Production must use durable mandate/outbox storage and a KMS-backed signer.
+  let demoMandateLayerPromise: Promise<{
+    merchantSigner: Awaited<ReturnType<typeof createLocalMerchantSigner>>;
+    mandateService: ReturnType<typeof createMandateService>;
+    openRegistry: InMemoryOpenMandateRegistry;
+    trustedSurface: Eip712TrustedSurfaceService;
+    agentSigners: Map<string, Awaited<ReturnType<typeof createDemoAgentMandateSigner>>>;
+    agentTrustVerifier: KyaAgentTrustVerifier;
+  }> | undefined;
+  const demoMandateLayer = () => {
+    if (config.KYA_MODE !== 'demo') throw new DomainError('Mandate demo routes are available only in KYA_MODE=demo', 'MODE');
+    if (!demoMandateLayerPromise) {
+      demoMandateLayerPromise = (async () => {
+        const merchantSigner = await createLocalMerchantSigner({ issuer: 'demo-merchant-1', nodeEnv: config.NODE_ENV });
+        const openRegistry = new InMemoryOpenMandateRegistry();
+        const trustedSurface = new Eip712TrustedSurfaceService({
+          repo, registry: openRegistry, approvalStore: new InMemoryTrustedSurfaceApprovalStore(), chainId: 84532,
+          verifier: { verify: ({ address, domain, message, signature }) => verifyTypedData({ address, domain, message, signature, types: mandateApprovalTypes, primaryType: 'MandateApproval' }) },
+        });
+        return {
+          merchantSigner,
+          mandateService: createMandateService({ merchantSigner, replayStore: new InMemoryMandateReplayStore() }),
+          openRegistry, trustedSurface, agentSigners: new Map(),
+          agentTrustVerifier: new KyaAgentTrustVerifier(repo, {
+            policyVersion: 'demo-v1',
+            // Explicit demo adapters. KyaAgentTrustVerifier remains deny-by-default elsewhere.
+            isTenantAuthorized: () => true,
+            riskLevel: () => 'low',
+          }),
+        };
+      })();
+    }
+    return demoMandateLayerPromise;
+  };
 
   app.use(
     '*',
@@ -101,6 +151,90 @@ export function createApp(repo: Repository, config: AppConfig) {
     await next();
   });
 
+  // --- AP2 mandate demo (no merchant, Yuno, chain, or durable storage calls) ---
+  app.post('/v1/mandates/demo/agents', requireSession, async (c) => {
+    const address = c.get('address')!;
+    const store = await repo.getStore();
+    const principal = store.principals.find((item) => item.ownerAddress.toLowerCase() === address.toLowerCase());
+    if (!principal || principal.kycStatus !== 'verified' || (principal.kycExpiresAt && Date.parse(principal.kycExpiresAt) <= Date.now())) {
+      throw new DomainError('Complete demo KYC before creating a demo purchasing agent', 'KYC_REQUIRED');
+    }
+    const layer = await demoMandateLayer();
+    const signer = await createDemoAgentMandateSigner(config.KYA_MODE);
+    // The signer public key is enrolled in KYA; this is required for JWK binding at close time.
+    const started = await ceremony.startEnrollment({ publicJwk: signer.publicKeyJwk, keystoreProvider: 'encrypted_os_keystore' });
+    await ceremony.attachHuman(started.agentUuid, address);
+    await ceremony.approveFingerprint(started.agentUuid, address, started.thumbprint);
+    const bound = await ceremony.confirmDemoRegistration(started.agentUuid, address);
+    layer.agentSigners.set(bound.agentId, signer);
+    return c.json({ agentUuid: started.agentUuid, agentId: bound.agentId, agentRegistry: bound.agentRegistry, status: 'bound', demo: true }, 201);
+  });
+
+  app.post('/v1/mandates/checkout', requireSession, async (c) => {
+    const layer = await demoMandateLayer();
+    return c.json(await layer.mandateService.createMerchantCheckout(await c.req.json()), 201);
+  });
+
+  app.post('/v1/mandates/open', requireSession, async (c) => {
+    const address = c.get('address')!;
+    const body = await c.req.json<{ agentUuid: string; constraints: OpenMandateConstraints; expiresAt?: string }>();
+    const enrollment = await ceremony.getEnrollmentAuthorized(body.agentUuid, address);
+    if (enrollment.status !== 'bound' || !enrollment.agentId) throw new DomainError('Agent must be KYA-bound before creating a mandate', 'NOT_BOUND');
+    const layer = await demoMandateLayer();
+    if (!layer.agentSigners.has(enrollment.agentId)) throw new DomainError('Agent was not created by the demo mandate flow', 'DEMO_AGENT_REQUIRED');
+    const now = new Date();
+    const expiresAt = body.expiresAt ?? new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+    if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= now.getTime()) throw new DomainError('Open mandate expiry must be in the future', 'MANDATE_EXPIRY');
+    const common = {
+      tenantId: 'tenant_1', userReference: address, agentId: enrollment.agentId,
+      agentPublicKeyJwk: enrollment.publicJwk, constraints: body.constraints,
+      issuedAt: now.toISOString(), expiresAt, audience: 'kya-ap2',
+    };
+    const checkout = layer.openRegistry.create({ ...common, type: 'checkout', nonce: `open-checkout-${randomUUID()}` });
+    const payment = layer.openRegistry.create({ ...common, type: 'payment', nonce: `open-payment-${randomUUID()}` });
+    return c.json({ checkout, payment }, 201);
+  });
+
+  app.post('/v1/mandates/open/:id/challenge', requireSession, async (c) => {
+    const layer = await demoMandateLayer();
+    const result = await layer.trustedSurface.createApprovalChallenge({ openMandateId: c.req.param('id'), ownerAddress: c.get('address')! });
+    // JSON cannot serialize bigint. Wallets can pass these decimal strings to eth_signTypedData_v4.
+    return c.json({
+      challenge: { ...result.challenge, message: { ...result.challenge.message, issuedAt: result.challenge.message.issuedAt.toString(), expiresAt: result.challenge.message.expiresAt.toString() } },
+      typedData: { ...result.typedData, message: { ...result.typedData.message, issuedAt: result.typedData.message.issuedAt.toString(), expiresAt: result.typedData.message.expiresAt.toString() } },
+    });
+  });
+
+  app.post('/v1/mandates/open/:id/approve', requireSession, async (c) => {
+    const body = await c.req.json<{ challengeId: string; signature: Hex }>();
+    const layer = await demoMandateLayer();
+    const result = await layer.trustedSurface.verifyAndRecordApproval({ challengeId: body.challengeId, ownerAddress: c.get('address')!, signature: body.signature });
+    if (result.mandate.id !== c.req.param('id')) throw new DomainError('Approval challenge does not belong to this mandate', 'APPROVAL_SUBJECT');
+    return c.json({ mandate: result.mandate, proof: result.proof });
+  });
+
+  app.post('/v1/mandates/close', requireSession, async (c) => {
+    const address = c.get('address')!;
+    const body = await c.req.json<{
+      openCheckoutMandateId: string; openPaymentMandateId: string; checkoutJwt: string; checkoutHash: string;
+      transactionId: string; paymentInstrumentAlias: string; payeeId: string;
+    }>();
+    const layer = await demoMandateLayer();
+    const openCheckoutMandate = layer.openRegistry.get(body.openCheckoutMandateId);
+    const openPaymentMandate = layer.openRegistry.get(body.openPaymentMandateId);
+    if (openCheckoutMandate.userReference.toLowerCase() !== address.toLowerCase() || openPaymentMandate.userReference.toLowerCase() !== address.toLowerCase()) throw new DomainError('Mandates do not belong to this session', 'FORBIDDEN');
+    const agentSigner = layer.agentSigners.get(openCheckoutMandate.agentId);
+    if (!agentSigner || openCheckoutMandate.agentId !== openPaymentMandate.agentId) throw new DomainError('Demo agent signer unavailable', 'DEMO_AGENT_REQUIRED');
+    const closed = await createAutonomousClosedMandates({
+      openCheckoutMandate, openPaymentMandate, checkoutJwt: body.checkoutJwt, checkoutHash: body.checkoutHash,
+      transactionId: body.transactionId, agentIdentity: { agentId: openCheckoutMandate.agentId, tenantId: openCheckoutMandate.tenantId },
+      agentKeyReference: agentSigner.keyId, paymentInstrumentAlias: body.paymentInstrumentAlias, payeeId: body.payeeId,
+      merchantSigner: layer.merchantSigner,
+      agentTrustVerifier: layer.agentTrustVerifier, agentSigner,
+    });
+    return c.json({ status: closed.status, closedCheckoutHash: closed.closedCheckoutHash, closedPaymentHash: closed.closedPaymentHash, policy: closed.policy, trust: closed.trust });
+  });
+
   // --- Public resolve (no PII) ---
   app.get('/v1/resolve', async (c) => {
     const agentUuid = c.req.query('agentUuid') ?? undefined;
@@ -129,6 +263,17 @@ export function createApp(repo: Repository, config: AppConfig) {
       principalId: result.principal.id,
       needsKyc: result.needsKyc,
       thumbprint: result.enrollment.thumbprint,
+    });
+  });
+
+  app.post('/v1/enrollments/:agentUuid/mandate-signing-key', requireSession, async (c) => {
+    const body = await c.req.json<{ publicJwk: JsonWebKey; keyId: string }>();
+    const enrollment = await ceremony.bindMandateSigningKey(c.req.param('agentUuid'), c.get('address')!, body);
+    return c.json({
+      agentUuid: enrollment.agentUuid,
+      mandateSigningKeyId: enrollment.mandateSigningKeyId,
+      mandateSigningThumbprint: enrollment.mandateSigningThumbprint,
+      boundAt: enrollment.mandateSigningBoundAt,
     });
   });
 
