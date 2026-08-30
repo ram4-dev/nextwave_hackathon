@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { calculateJwkThumbprint } from 'jose';
 import { createPublicClient, getAddress, http, type Hex, type TypedDataDomain } from 'viem';
 import { base, baseSepolia } from 'viem/chains';
 import { credentialUsable, isKycActive, DomainError } from '../domain/state-machine.js';
@@ -128,19 +129,27 @@ function assertKyaUserCanApprove(
   mandate: OpenMandateRecord,
   ownerAddress: `0x${string}`,
   now: Date,
+  mandateKeyThumbprint: string,
 ): void {
   const enrollment = repoStore.enrollments.find((item) => item.agentUuid === mandate.agentId || item.agentId === mandate.agentId);
   if (!enrollment || enrollment.status !== 'bound' || !enrollment.principalId) {
     throw new DomainError('Mandate agent is not an active KYA enrollment', 'APPROVAL_AGENT');
+  }
+  if (enrollment.thumbprint !== mandateKeyThumbprint) {
+    throw new DomainError('Open mandate agent key thumbprint does not match enrollment', 'APPROVAL_KEY_THUMBPRINT');
   }
   const principal = repoStore.principals.find((item) => item.id === enrollment.principalId);
   if (!principal || principal.ownerAddress.toLowerCase() !== ownerAddress.toLowerCase() || !isKycActive(principal, now)) {
     throw new DomainError('Session wallet is not an active KYA principal for this mandate', 'APPROVAL_PRINCIPAL');
   }
   const credential = repoStore.credentials.find(
-    (item) => item.agentUuid === enrollment.agentUuid && item.principalId === principal.id && credentialUsable(item.status, item.expiresAt, now),
+    (item) => item.agentUuid === enrollment.agentUuid
+      && item.principalId === principal.id
+      && item.thumbprint === enrollment.thumbprint
+      && item.thumbprint === mandateKeyThumbprint
+      && credentialUsable(item.status, item.expiresAt, now),
   );
-  if (!credential) throw new DomainError('Mandate agent has no active KYA credential', 'APPROVAL_CREDENTIAL');
+  if (!credential) throw new DomainError('Mandate agent has no active KYA credential for matching thumbprint', 'APPROVAL_CREDENTIAL');
 }
 
 export class Eip712TrustedSurfaceService {
@@ -184,7 +193,8 @@ export class Eip712TrustedSurfaceService {
     if (liveHash !== mandate.canonicalPayloadHash) {
       throw new DomainError('Open mandate payload mutated after create', 'OPEN_MANDATE_HASH');
     }
-    assertKyaUserCanApprove(await this.dependencies.repo.getStore(), mandate, ownerAddress, now);
+    const mandateKeyThumbprint = await calculateJwkThumbprint(mandate.agentPublicKeyJwk, 'sha256');
+    assertKyaUserCanApprove(await this.dependencies.repo.getStore(), mandate, ownerAddress, now, mandateKeyThumbprint);
     const ttl = this.dependencies.challengeTtlSeconds ?? 300;
     if (!Number.isSafeInteger(ttl) || ttl <= 0) throw new DomainError('Challenge TTL must be positive', 'APPROVAL_CONFIG');
     const expiresAt = new Date(Math.min(Date.parse(mandate.expiresAt), now.getTime() + ttl * 1000)).toISOString();
@@ -237,7 +247,8 @@ export class Eip712TrustedSurfaceService {
       throw new DomainError('Approval challenge expired', 'APPROVAL_EXPIRED');
     }
     const mandate = this.dependencies.registry.get(challenge.openMandateId);
-    assertKyaUserCanApprove(await this.dependencies.repo.getStore(), mandate, ownerAddress, now);
+    const mandateKeyThumbprint = await calculateJwkThumbprint(mandate.agentPublicKeyJwk, 'sha256');
+    assertKyaUserCanApprove(await this.dependencies.repo.getStore(), mandate, ownerAddress, now, mandateKeyThumbprint);
     const liveHash = openMandatePayloadHash(mandate);
     if (liveHash !== mandate.canonicalPayloadHash || liveHash !== challenge.expectedPayloadHash) {
       throw new DomainError('Open mandate payload hash mismatch at activation', 'OPEN_MANDATE_HASH');

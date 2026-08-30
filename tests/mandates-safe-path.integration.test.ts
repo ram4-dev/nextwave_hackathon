@@ -71,7 +71,7 @@ describe('AP2 safe-path integration', () => {
       });
     });
 
-    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
+    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const mandateService = createMandateService({
       merchantSigner: merchant,
       replayStore: new InMemoryMandateReplayStore(),
