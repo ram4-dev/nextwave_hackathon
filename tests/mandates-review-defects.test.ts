@@ -1,11 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import pg from 'pg';
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair } from 'jose';
 import { privateKeyToAccount } from 'viem/accounts';
 import { verifyTypedData, type Hex } from 'viem';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { InMemoryRepository } from '../src/persistence/repository.js';
 import {
   createAutonomousClosedMandates,
@@ -54,7 +51,7 @@ function sha(value: string): string {
 
 describe('review defect 1: complete draft canonical payload hash', () => {
   it('rejects checkout and payment field mutations without expectedUserReference', async () => {
-    const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
+    const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const sut = createMandateService({
       merchantSigner: signer,
       replayStore: new InMemoryMandateReplayStore(),
@@ -106,7 +103,7 @@ describe('review defect 1: complete draft canonical payload hash', () => {
     for (const draft of paymentCases) {
       await expect(sut.verifyDraftConsistency({
         checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_d1', draft,
-      })).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|PAYEE_REDIRECT|PAYMENT_INSTRUMENT/) });
+      })).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|PAYEE_REDIRECT|PAYMENT_INSTRUMENT|DRAFT_LINEAGE/) });
     }
   });
 });
@@ -114,7 +111,7 @@ describe('review defect 1: complete draft canonical payload hash', () => {
 describe('review defect 2: shared default policy ledger', () => {
   it('rejects 60+60 against budget 100 across two closures without injected ledger', async () => {
     const agentSigner = await createTestAgentMandateSigner('test');
-    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
+    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const registry = new InMemoryOpenMandateRegistry();
     const service = createMandateService({ merchantSigner: merchant, replayStore: new InMemoryMandateReplayStore(), now: () => now });
 
@@ -179,100 +176,11 @@ describe('review defect 2: shared default policy ledger', () => {
   });
 });
 
-describe('review defect 3: safe upgrade migration', () => {
-  const databaseUrl = process.env.CATALOG_DATABASE_URL ?? 'postgres://catalog:catalog@127.0.0.1:55432/juno_catalog';
-  let client: pg.Client | undefined;
-  const schema = `mandate_upgrade_${Date.now()}`;
-
-  beforeAll(async () => {
-    client = new pg.Client({ connectionString: databaseUrl });
-    await client.connect();
-    await client.query(`create schema ${schema}`);
-    await client.query(`set search_path to ${schema}`);
-  });
-
-  afterAll(async () => {
-    if (!client) return;
-    await client.query(`drop schema if exists ${schema} cascade`);
-    await client.end();
-  });
-
-  it('upgrades legacy prompt + 9-arg reserve schema to remediated shape', async () => {
-    if (!client) throw new Error('no pg client');
-    // Legacy schema (pre-remediation)
-    await client.query(`
-      create table mandate_requests (
-        id text primary key,
-        transaction_id text not null unique,
-        agent_id text not null,
-        tenant_id text not null,
-        prompt text not null,
-        prompt_hash text not null,
-        received_at timestamptz not null,
-        status text not null default 'received',
-        created_at timestamptz not null default now()
-      );
-      create table mandate_policy_reservations (
-        transaction_id text primary key,
-        checkout_mandate_id text not null,
-        payment_mandate_id text not null,
-        amount_minor bigint not null,
-        reserved_at timestamptz not null,
-        released_at timestamptz,
-        created_at timestamptz not null default now()
-      );
-      create function create_mandate_request(
-        p_id text, p_transaction_id text, p_agent_id text, p_tenant_id text,
-        p_prompt text, p_prompt_hash text, p_received_at timestamptz
-      ) returns mandate_requests language sql as $$
-        insert into mandate_requests (id, transaction_id, agent_id, tenant_id, prompt, prompt_hash, received_at)
-        values (p_id, p_transaction_id, p_agent_id, p_tenant_id, p_prompt, p_prompt_hash, p_received_at)
-        returning *;
-      $$;
-      create function reserve_mandate_policy(
-        p_checkout_mandate_id text, p_payment_mandate_id text, p_transaction_id text,
-        p_amount_minor bigint, p_reserved_at timestamptz, p_total_budget_minor bigint,
-        p_max_operations integer, p_frequency_window_seconds integer, p_max_operations_per_window integer
-      ) returns void language plpgsql as $$ begin null; end; $$;
-    `);
-
-    const upgradeSql = await readFile(
-      path.join(process.cwd(), 'supabase/migrations/20260830235959_upgrade_mandate_schema_v2.sql'),
-      'utf8',
-    );
-    // Rewrite public. -> current schema for isolated test
-    await client.query(upgradeSql.replaceAll('public.', `${schema}.`).replaceAll('set search_path = public', `set search_path = ${schema}`));
-
-    const cols = await client.query(`
-      select column_name from information_schema.columns
-      where table_schema = $1 and table_name = 'mandate_requests' order by column_name
-    `, [schema]);
-    const names = cols.rows.map((row) => row.column_name);
-    expect(names).toContain('prompt_hash');
-    expect(names).toContain('encrypted_prompt_ref');
-    expect(names).not.toContain('prompt');
-
-    const funcs = await client.query(`
-      select p.proname, pg_get_function_identity_arguments(p.oid) as args
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = $1 and p.proname in ('create_mandate_request', 'reserve_mandate_policy')
-      order by 1, 2
-    `, [schema]);
-    const reserveArgs = funcs.rows.filter((row) => row.proname === 'reserve_mandate_policy').map((row) => row.args);
-    expect(reserveArgs.some((args: string) => args.split(',').length === 9)).toBe(false);
-    expect(reserveArgs.some((args: string) => args.split(',').length === 13)).toBe(true);
-
-    // Fresh-install idempotency: applying upgrade again must not fail.
-    await client.query(upgradeSql.replaceAll('public.', `${schema}.`).replaceAll('set search_path = public', `set search_path = ${schema}`));
-  });
-});
-
 describe('review defect 4: key binding and independent JWS verify', () => {
   it('rejects mismatched signer cnf, key id, wrong credential principal/thumbprint, and altered closed JWS payload', async () => {
     const agentSigner = await createTestAgentMandateSigner('test');
     const otherSigner = await createTestAgentMandateSigner('test');
-    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
+    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const registry = new InMemoryOpenMandateRegistry();
     const service = createMandateService({ merchantSigner: merchant, replayStore: new InMemoryMandateReplayStore(), now: () => now });
     const checkout = await service.createMerchantCheckout({
@@ -366,6 +274,8 @@ describe('review defect 4: key binding and independent JWS verify', () => {
 
 describe('review defect 5: atomic activation proof persistence', () => {
   it('keeps mandate awaiting and challenge retryable when consume fails, then succeeds on retry', async () => {
+    const agentPublicKeyJwk = { kty: 'EC' as const, crv: 'P-256' as const, x: 'x', y: 'y' };
+    const thumbprint = await calculateJwkThumbprint(agentPublicKeyJwk, 'sha256');
     const repo = new InMemoryRepository();
     await repo.withLock((store) => {
       store.principals.push({
@@ -374,11 +284,11 @@ describe('review defect 5: atomic activation proof persistence', () => {
       });
       store.enrollments.push({
         agentUuid: 'agent_1', deviceCode: 'd1', principalId: 'principal_1', status: 'bound',
-        publicJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }, thumbprint: 't',
+        publicJwk: agentPublicKeyJwk, thumbprint,
         keystoreProvider: 'os_hardware', agentUriPath: '/a', createdAt: now.toISOString(), updatedAt: now.toISOString(),
       });
       store.credentials.push({
-        id: 'c1', agentUuid: 'agent_1', principalId: 'principal_1', thumbprint: 't',
+        id: 'c1', agentUuid: 'agent_1', principalId: 'principal_1', thumbprint,
         agentRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e', agentId: '1', owner: account.address,
         status: 'active', statusRef: 'local', issuedAt: now.toISOString(), expiresAt: '2031-01-01T00:00:00.000Z', jti: 'j1',
       });
@@ -386,7 +296,7 @@ describe('review defect 5: atomic activation proof persistence', () => {
     const registry = new InMemoryOpenMandateRegistry();
     const mandate = registry.create({
       type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
-      agentPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' },
+      agentPublicKeyJwk,
       constraints: constraints(), issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: 'n1',
     });
     const store = new InMemoryTrustedSurfaceApprovalStore();
@@ -422,10 +332,10 @@ describe('review defect 5: atomic activation proof persistence', () => {
 
 describe('review defect 6: outbox lease and strict hashes', () => {
   it('allows only one concurrent anchor and retries until failed with lease recovery', async () => {
-    const outbox = new InMemoryMandateAnchorOutbox({ maxAttempts: 2, leaseMs: 1 });
+    const outbox = new InMemoryMandateAnchorOutbox({ maxAttempts: 2, leaseMs: 30_000 });
     const client = new FakeMandateAnchorClient();
-    const workerA = new MandateAnchorWorker(outbox, client, { maxAttempts: 2 });
-    const workerB = new MandateAnchorWorker(outbox, client, { maxAttempts: 2 });
+    const workerA = new MandateAnchorWorker(outbox, client);
+    const workerB = new MandateAnchorWorker(outbox, client);
     const evidence = {
       closedCheckoutHash: sha('c'),
       closedPaymentHash: sha('p'),
@@ -438,14 +348,17 @@ describe('review defect 6: outbox lease and strict hashes', () => {
     await outbox.enqueue(evidence);
     const [a, b] = await Promise.all([workerA.processOnce(), workerB.processOnce()]);
     const anchored = [a, b].filter((job) => job?.status === 'anchored');
+    const idle = [a, b].filter((job) => job === undefined);
     expect(anchored).toHaveLength(1);
+    expect(idle).toHaveLength(1);
     expect(client.anchored).toHaveLength(1);
     expect(anchored[0]?.txHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
 
-    const failing = new MandateAnchorWorker(outbox, {
+    const failingOutbox = new InMemoryMandateAnchorOutbox({ maxAttempts: 2, leaseMs: 1 });
+    const failing = new MandateAnchorWorker(failingOutbox, {
       anchor: async () => { throw new Error('rpc down'); },
-    }, { maxAttempts: 2 });
-    await outbox.enqueue({ ...evidence, closedCheckoutHash: sha('c2'), closedPaymentHash: sha('p2') });
+    });
+    await failingOutbox.enqueue({ ...evidence, closedCheckoutHash: sha('c2'), closedPaymentHash: sha('p2') });
     const firstFail = await failing.processOnce();
     expect(firstFail?.status).toBe('pending');
     const secondFail = await failing.processOnce();

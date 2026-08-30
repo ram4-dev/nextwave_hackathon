@@ -15,6 +15,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:mandates:postgres": "vitest run --config vitest.mandates-postgres.config.ts",
     "demo:ceremony": "tsx scripts/demo-ceremony.ts",
     "catalog:up": "docker compose -f docker-compose.catalog.yml up -d --wait",
     "catalog:down": "docker compose -f docker-compose.catalog.yml down",

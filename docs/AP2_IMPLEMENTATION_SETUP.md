@@ -37,9 +37,17 @@
 
 Ejecutá en orden:
 
-1. `supabase/migrations/20260830_create_mandate_policy_ledger.sql`
-2. `supabase/migrations/20260830_create_mandate_requests.sql`
-3. `supabase/migrations/20260830235959_upgrade_mandate_schema_v2.sql` (upgrade idempotente posterior a las create: elimina `prompt`, drop del RPC request viejo y del `reserve_mandate_policy` de 9 args, asegura funciones/índices/grants/RLS nuevos)
+1. `supabase/migrations/20260830000100_create_mandate_policy_ledger.sql`
+2. `supabase/migrations/20260830000200_create_mandate_requests.sql`
+3. `supabase/migrations/20260830235959_upgrade_mandate_schema_v2.sql` (upgrade idempotente posterior a las create: elimina `prompt`, drop del RPC request viejo y del `reserve_mandate_policy` de 9 args, asegura CHECK exacto de `prompt_hash`, funciones/índices/grants/RLS nuevos)
+
+Cada archivo usa un prefijo de versión numérico único (Supabase CLI).
+
+## Tests
+
+- `npm test` — suite hermética (sin Postgres de mandatos).
+- Integración Postgres de mandatos (opt-in): `MANDATE_TEST_DATABASE_URL=postgres://catalog:catalog@127.0.0.1:55432/juno_catalog npm run test:mandates:postgres`
+- Drafts CLI: `NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json` (el CLI materializa ventanas relativas al reloj real; no confía en timestamps absolutos de demo como 2030).
 
 ## Trusted Surface EIP-712
 

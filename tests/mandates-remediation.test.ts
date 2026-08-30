@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { calculateJwkThumbprint } from 'jose';
 import { privateKeyToAccount } from 'viem/accounts';
 import { verifyTypedData, type Hex } from 'viem';
 import { describe, expect, it, vi } from 'vitest';
@@ -49,6 +50,8 @@ function constraints(overrides: Partial<OpenMandateConstraints> = {}): OpenManda
 }
 
 async function seededRepo() {
+  const agentPublicKeyJwk = { kty: 'EC' as const, crv: 'P-256' as const, x: 'x', y: 'y' };
+  const thumbprint = await calculateJwkThumbprint(agentPublicKeyJwk, 'sha256');
   const repo = new InMemoryRepository();
   await repo.withLock((store) => {
     store.principals.push({
@@ -57,12 +60,12 @@ async function seededRepo() {
     });
     store.enrollments.push({
       agentUuid: 'agent_1', deviceCode: 'device_1', principalId: 'principal_1', status: 'bound',
-      publicJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }, thumbprint: 'thumbprint',
+      publicJwk: agentPublicKeyJwk, thumbprint,
       keystoreProvider: 'os_hardware', agentUriPath: '/agents/agent_1',
       createdAt: now.toISOString(), updatedAt: now.toISOString(),
     });
     store.credentials.push({
-      id: 'credential_1', agentUuid: 'agent_1', principalId: 'principal_1', thumbprint: 'thumbprint',
+      id: 'credential_1', agentUuid: 'agent_1', principalId: 'principal_1', thumbprint,
       agentRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e', agentId: '1', owner: account.address,
       status: 'active', statusRef: 'local', issuedAt: now.toISOString(), expiresAt: '2031-01-01T00:00:00.000Z', jti: 'jti_1',
     });
@@ -191,7 +194,7 @@ describe('policy ledger global budgets', () => {
 describe('autonomy provenance', () => {
   it('rejects fabricated active open mandate records and mismatched subjects', async () => {
     const registry = new InMemoryOpenMandateRegistry();
-    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test' });
+    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const agentSigner = await createTestAgentMandateSigner('test');
     const service = createMandateService({
       merchantSigner: merchant,
@@ -318,7 +321,7 @@ describe('prompt hash-only persistence', () => {
   });
 
   it('migration SQL does not define a plaintext prompt column or RPC arg', async () => {
-    const sql = await readFile(path.join(process.cwd(), 'supabase/migrations/20260830_create_mandate_requests.sql'), 'utf8');
+    const sql = await readFile(path.join(process.cwd(), 'supabase/migrations/20260830000200_create_mandate_requests.sql'), 'utf8');
     expect(sql).toContain('prompt_hash');
     expect(sql).toContain('encrypted_prompt_ref');
     expect(sql).not.toMatch(/\bp_prompt\b/);
