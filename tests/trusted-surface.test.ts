@@ -20,7 +20,16 @@ async function subject() {
     store.credentials.push({ id: 'credential_1', agentUuid: 'agent_1', principalId: 'principal_1', thumbprint: 'thumbprint', agentRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e', agentId: '1', owner: account.address, status: 'active', statusRef: 'local', issuedAt: now.toISOString(), expiresAt: '2031-01-01T00:00:00.000Z', jti: 'jti_1' });
   });
   const registry = new InMemoryOpenMandateRegistry();
-  const mandate = registry.create({ type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1', agentPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }, constraints: { merchantIds: ['merchant_1'], payeeIds: ['merchant_1'], maxQuantityPerProduct: 1, minAmountMinor: 1, maxAmountMinor: 1000, currency: 'USD', totalBudgetMinor: 1000, maxOperations: 1, frequencyWindowSeconds: 60, maxOperationsPerWindow: 1, paymentInstrumentAlias: 'instrument_1' }, issuedAt: now.toISOString(), expiresAt: '2030-01-01T01:00:00.000Z', audience: 'credential-provider', nonce: 'mandate_nonce' });
+  const mandate = registry.create({
+    type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+    agentPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' },
+    constraints: {
+      merchantIds: ['merchant_1'], payeeIds: ['merchant_1'], maxQuantityPerProduct: 1, minAmountMinor: 1, maxAmountMinor: 1000,
+      currency: 'USD', totalBudgetMinor: 1000, maxOperations: 1, frequencyWindowSeconds: 60, maxOperationsPerWindow: 1,
+      paymentInstrumentAlias: 'instrument_1',
+    },
+    issuedAt: now.toISOString(), expiresAt: '2030-01-01T01:00:00.000Z', audience: 'credential-provider', nonce: 'mandate_nonce',
+  });
   const service = new Eip712TrustedSurfaceService({
     repo, registry, approvalStore: new InMemoryTrustedSurfaceApprovalStore(), chainId: 84532, now: () => now,
     verifier: { verify: ({ address, domain, message, signature }) => verifyTypedData({ address, domain, types: mandateApprovalTypes, primaryType: 'MandateApproval', message, signature }) },

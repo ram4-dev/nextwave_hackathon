@@ -4,12 +4,25 @@ import { randomUUID } from 'node:crypto';
 import { DomainError } from '../domain/state-machine.js';
 import type { MandateReplayStore } from './types.js';
 
+type PaymentDraftRecord = {
+  transactionId: string;
+  checkoutHash: string;
+  checkoutMandateDraftId: string;
+  payeeId: string;
+  amountMinor: number;
+  currency: string;
+  instrumentId: string;
+  sub: string;
+  aud: string;
+};
+
 type ReplayState = {
   nonces: Record<string, true>;
   checkoutDrafts: Record<string, { transactionId: string; checkoutHash: string }>;
+  paymentDrafts: Record<string, PaymentDraftRecord>;
 };
 
-const emptyState = (): ReplayState => ({ nonces: {}, checkoutDrafts: {} });
+const emptyState = (): ReplayState => ({ nonces: {}, checkoutDrafts: {}, paymentDrafts: {} });
 
 export class InMemoryMandateReplayStore implements MandateReplayStore {
   private readonly state = emptyState();
@@ -27,6 +40,14 @@ export class InMemoryMandateReplayStore implements MandateReplayStore {
   async getCheckoutDraft(id: string) {
     return this.state.checkoutDrafts[id];
   }
+
+  async rememberPaymentDraft(id: string, record: PaymentDraftRecord): Promise<void> {
+    this.state.paymentDrafts[id] = structuredClone(record);
+  }
+
+  async getPaymentDraft(id: string) {
+    return this.state.paymentDrafts[id] ? structuredClone(this.state.paymentDrafts[id]) : undefined;
+  }
 }
 
 /** Local-only metadata store; it intentionally contains no JWTs, card data, or private keys. */
@@ -35,8 +56,9 @@ export class JsonFileMandateReplayStore implements MandateReplayStore {
   constructor(private readonly filePath: string) {}
 
   private async read(): Promise<ReplayState> {
-    try { return { ...emptyState(), ...JSON.parse(await readFile(this.filePath, 'utf8')) } as ReplayState; }
-    catch (error) {
+    try {
+      return { ...emptyState(), ...JSON.parse(await readFile(this.filePath, 'utf8')) } as ReplayState;
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyState();
       throw error;
     }
@@ -45,6 +67,7 @@ export class JsonFileMandateReplayStore implements MandateReplayStore {
   private async mutate<T>(fn: (state: ReplayState) => T): Promise<T> {
     const run = this.lock.then(async () => {
       const state = await this.read();
+      if (!state.paymentDrafts) state.paymentDrafts = {};
       const result = fn(state);
       await mkdir(path.dirname(this.filePath), { recursive: true });
       const temp = `${this.filePath}.${randomUUID()}.tmp`;
@@ -68,5 +91,15 @@ export class JsonFileMandateReplayStore implements MandateReplayStore {
     await this.mutate((state) => { state.checkoutDrafts[id] = { transactionId, checkoutHash }; });
   }
 
-  async getCheckoutDraft(id: string) { return (await this.read()).checkoutDrafts[id]; }
+  async getCheckoutDraft(id: string) {
+    return (await this.read()).checkoutDrafts[id];
+  }
+
+  async rememberPaymentDraft(id: string, record: PaymentDraftRecord): Promise<void> {
+    await this.mutate((state) => { state.paymentDrafts[id] = structuredClone(record); });
+  }
+
+  async getPaymentDraft(id: string) {
+    return (await this.read()).paymentDrafts?.[id];
+  }
 }

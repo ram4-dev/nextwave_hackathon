@@ -75,4 +75,26 @@ export interface MandateReplayStore {
   consumeNonce(transactionId: string, nonce: string): Promise<void>;
   rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string): Promise<void>;
   getCheckoutDraft(id: string): Promise<{ transactionId: string; checkoutHash: string } | undefined>;
+  rememberPaymentDraft?(id: string, record: {
+    transactionId: string;
+    checkoutHash: string;
+    checkoutMandateDraftId: string;
+    payeeId: string;
+    amountMinor: number;
+    currency: string;
+    instrumentId: string;
+    sub: string;
+    aud: string;
+  }): Promise<void>;
+  getPaymentDraft?(id: string): Promise<{
+    transactionId: string;
+    checkoutHash: string;
+    checkoutMandateDraftId: string;
+    payeeId: string;
+    amountMinor: number;
+    currency: string;
+    instrumentId: string;
+    sub: string;
+    aud: string;
+  } | undefined>;
 }

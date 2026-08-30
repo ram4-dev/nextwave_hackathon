@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createLocalMerchantSigner, createMandateService, JsonFileMandateReplayStore } from '../src/mandates/index.js';
 import type { CreateMerchantCheckoutInput } from '../src/mandates/index.js';
 
@@ -16,13 +17,19 @@ type CliInput = CreateMerchantCheckoutInput & {
   };
 };
 
-export async function createMandatesFromFile(filePath: string, env: NodeJS.ProcessEnv = process.env) {
+export async function createMandatesFromFile(
+  filePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: { replayStorePath?: string } = {},
+) {
   const input = JSON.parse(await readFile(filePath, 'utf8')) as CliInput;
   const nodeEnv = env.NODE_ENV ?? 'development';
   const rawKey = env.MERCHANT_SIGNING_PRIVATE_JWK;
   const privateJwk = rawKey ? JSON.parse(rawKey) as JsonWebKey : undefined;
   const signer = await createLocalMerchantSigner({ issuer: input.merchant.id, privateJwk, nodeEnv });
-  const store = new JsonFileMandateReplayStore(path.resolve('.mandate-artifacts/replay-store.json'));
+  const store = new JsonFileMandateReplayStore(
+    options.replayStorePath ?? path.resolve('.mandate-artifacts', `replay-store-${randomUUID()}.json`),
+  );
   const service = createMandateService({ merchantSigner: signer, replayStore: store });
   const { userReference, checkoutMandate, paymentMandate, ...checkoutInput } = input;
   const checkout = await service.createMerchantCheckout(checkoutInput);

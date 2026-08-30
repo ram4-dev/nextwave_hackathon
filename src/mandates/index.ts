@@ -1,6 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { DomainError } from '../domain/state-machine.js';
+import { checkoutHash } from './canonical.js';
 import { InMemoryMandateReplayStore } from './replay-store.js';
 export {
   Eip712TrustedSurfaceService,
@@ -65,6 +66,35 @@ const paymentDraftSchema = z.object({
   userReference: opaqueId, nonce, issuedAt: utcDate, expiresAt: utcDate,
 }).strict();
 
+const checkoutMandatePayloadSchema = z.object({
+  vct: z.literal('mandate.checkout.1'),
+  transaction_id: opaqueId,
+  checkout_hash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  checkout_jwt: z.string().min(1),
+  sub: opaqueId,
+  aud: opaqueId,
+  iat: z.number().int(),
+  exp: z.number().int(),
+  nonce,
+  jti: opaqueId,
+}).strict();
+
+const paymentMandatePayloadSchema = z.object({
+  vct: z.literal('mandate.payment.1'),
+  transaction_id: opaqueId,
+  checkout_hash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  checkout_mandate_draft_id: opaqueId,
+  payee: z.object({ id: opaqueId, name: z.string().min(1).max(300), website: url }).strict(),
+  payment_amount: z.object({ amount_minor: minor, currency }).strict(),
+  payment_instrument: z.object({ id: opaqueId, type: z.string().min(1).max(100), description_masked: z.string().min(5).max(200) }).strict(),
+  sub: opaqueId,
+  aud: opaqueId,
+  iat: z.number().int(),
+  exp: z.number().int(),
+  nonce,
+  jti: opaqueId,
+}).strict();
+
 export type CreateMerchantCheckoutInput = z.input<typeof checkoutSchema>;
 export type CreateCheckoutMandateDraftInput = z.input<typeof checkoutDraftSchema>;
 export type CreatePaymentMandateDraftInput = z.input<typeof paymentDraftSchema>;
@@ -76,10 +106,6 @@ export type CreateMandateServiceOptions = {
   credentialProviderAudience?: string;
   now?: () => Date;
 };
-
-export function checkoutHash(jwt: string): string {
-  return createHash('sha256').update(jwt).digest('base64url');
-}
 
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   try { return schema.parse(input); }
@@ -115,10 +141,21 @@ function verifyTotals(value: CheckoutSnapshot): void {
   }
 }
 
-function rejectSensitiveInstrument(instrument: { id: string; type: string; descriptionMasked: string }): void {
+function rejectSensitiveInstrument(instrument: { id: string; type: string; descriptionMasked?: string; description_masked?: string }): void {
   const raw = JSON.stringify(instrument);
-  if (/\b(?:pan|cvc|cvv|token|yuno|card_number|security_code)\b/i.test(raw) || /\d{12,}/.test(instrument.id) || !/[•*xX]{2,}/.test(instrument.descriptionMasked)) {
+  const masked = instrument.descriptionMasked ?? instrument.description_masked ?? '';
+  if (/\b(?:pan|cvc|cvv|token|yuno|card_number|security_code)\b/i.test(raw) || /\d{12,}/.test(instrument.id) || !/[•*xX]{2,}/.test(masked)) {
     throw new DomainError('Payment instrument must be opaque and masked', 'PAYMENT_INSTRUMENT');
+  }
+}
+
+function assertPayeeMatchesMerchant(payee: { id: string; website: string }, merchant: CheckoutSnapshot['merchant']): void {
+  if (payee.id !== merchant.id) {
+    throw new DomainError('Payee redirection is not allowed', 'PAYEE_REDIRECT');
+  }
+  const normalize = (value: string) => value.replace(/\/$/, '').toLowerCase();
+  if (normalize(payee.website) !== normalize(merchant.website)) {
+    throw new DomainError('Payee website must match merchant website', 'PAYEE_REDIRECT');
   }
 }
 
@@ -132,7 +169,6 @@ export function createMandateService(options: CreateMandateServiceOptions) {
   async function verifiedCheckout(checkoutJwt: string, expectedHash: string, transactionId: string): Promise<CheckoutSnapshot> {
     if (checkoutHash(checkoutJwt) !== expectedHash) throw new DomainError('Checkout hash does not match JWT', 'CHECKOUT_HASH');
     const value = await options.merchantSigner.verifyCheckout(checkoutJwt);
-    // JWT registered claims are verified by the signer; they are not checkout fields.
     const { iss: _iss, aud: _aud, iat: _iat, exp: _exp, nbf: _nbf, jti: _jti, ...checkoutPayload } = value as CheckoutSnapshot & Record<string, unknown>;
     const checked = snapshot(parse(checkoutSchema, checkoutPayload));
     verifyTotals(checked);
@@ -178,9 +214,14 @@ export function createMandateService(options: CreateMandateServiceOptions) {
       validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, now());
       rejectSensitiveInstrument(checked.paymentInstrument);
       const checkout = await verifiedCheckout(checked.checkoutJwt, checked.checkoutHash, checked.transactionId);
-      if (checkout.totals.totalMinor !== checked.paymentAmount.amountMinor || checkout.totals.currency !== checked.paymentAmount.currency) throw new DomainError('Payment amount must exactly match checkout', 'PAYMENT_AMOUNT');
+      assertPayeeMatchesMerchant(checked.payee, checkout.merchant);
+      if (checkout.totals.totalMinor !== checked.paymentAmount.amountMinor || checkout.totals.currency !== checked.paymentAmount.currency) {
+        throw new DomainError('Payment amount must exactly match checkout', 'PAYMENT_AMOUNT');
+      }
       const checkoutDraft = await replayStore.getCheckoutDraft(checked.checkoutMandateDraftId);
-      if (!checkoutDraft || checkoutDraft.transactionId !== checked.transactionId || checkoutDraft.checkoutHash !== checked.checkoutHash) throw new DomainError('Checkout mandate reference is invalid', 'CHECKOUT_MANDATE_REFERENCE');
+      if (!checkoutDraft || checkoutDraft.transactionId !== checked.transactionId || checkoutDraft.checkoutHash !== checked.checkoutHash) {
+        throw new DomainError('Checkout mandate reference is invalid', 'CHECKOUT_MANDATE_REFERENCE');
+      }
       await replayStore.consumeNonce(checked.transactionId, checked.nonce);
       const id = `payment_draft_${randomUUID().replace(/-/g, '')}`;
       const unsignedMandatePayload: PaymentMandatePayload = {
@@ -189,17 +230,100 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         payment_instrument: { id: checked.paymentInstrument.id, type: checked.paymentInstrument.type, description_masked: checked.paymentInstrument.descriptionMasked },
         sub: checked.userReference, aud: credentialProviderAudience, iat: Math.floor(Date.parse(checked.issuedAt) / 1000), exp: Math.floor(Date.parse(checked.expiresAt) / 1000), nonce: checked.nonce, jti: id,
       };
-      return { id, mandateType: 'payment' as const, status: 'awaiting_user_signature' as const, unsignedMandatePayload,
+      if (replayStore.rememberPaymentDraft) {
+        await replayStore.rememberPaymentDraft(id, {
+          transactionId: checked.transactionId,
+          checkoutHash: checked.checkoutHash,
+          checkoutMandateDraftId: checked.checkoutMandateDraftId,
+          payeeId: checked.payee.id,
+          amountMinor: checked.paymentAmount.amountMinor,
+          currency: checked.paymentAmount.currency,
+          instrumentId: checked.paymentInstrument.id,
+          sub: checked.userReference,
+          aud: credentialProviderAudience,
+        });
+      }
+      return {
+        id, mandateType: 'payment' as const, status: 'awaiting_user_signature' as const, unsignedMandatePayload,
         signingRequest: { format: 'ap2-unsigned-payload', audience: credentialProviderAudience, payload: unsignedMandatePayload },
         mandatePreview: { payee: checked.payee.name, amountMinor: checked.paymentAmount.amountMinor, currency: checked.paymentAmount.currency, instrument: checked.paymentInstrument.descriptionMasked, expiresAt: checked.expiresAt },
-        transactionId: checked.transactionId, checkoutHash: checked.checkoutHash, expiresAt: checked.expiresAt };
+        transactionId: checked.transactionId, checkoutHash: checked.checkoutHash, expiresAt: checked.expiresAt,
+      };
     },
 
-    async verifyDraftConsistency(input: { checkoutJwt: string; checkoutHash: string; transactionId: string; draft: CheckoutMandatePayload | PaymentMandatePayload }) {
+    async verifyDraftConsistency(input: {
+      checkoutJwt: string;
+      checkoutHash: string;
+      transactionId: string;
+      draft: CheckoutMandatePayload | PaymentMandatePayload;
+      expectedUserReference?: string;
+      expectedAudience?: string;
+    }) {
       const checkout = await verifiedCheckout(input.checkoutJwt, input.checkoutHash, input.transactionId);
-      const draft = input.draft;
-      if (draft.transaction_id !== checkout.transactionId || draft.checkout_hash !== input.checkoutHash || draft.exp <= draft.iat || draft.exp * 1000 <= now().getTime()) throw new DomainError('Draft is inconsistent or expired', 'DRAFT_CONSISTENCY');
-      if (draft.vct === 'mandate.payment.1' && (draft.payment_amount.amount_minor !== checkout.totals.totalMinor || draft.payment_amount.currency !== checkout.totals.currency)) throw new DomainError('Payment draft differs from checkout', 'DRAFT_CONSISTENCY');
+      const expectedAud = input.expectedAudience ?? credentialProviderAudience;
+      const current = now();
+
+      if (input.draft.vct === 'mandate.checkout.1') {
+        const draft = parse(checkoutMandatePayloadSchema, input.draft);
+        if (draft.checkout_jwt !== input.checkoutJwt) throw new DomainError('Draft checkout JWT mismatch', 'DRAFT_CONSISTENCY');
+        if (checkoutHash(draft.checkout_jwt) !== draft.checkout_hash || draft.checkout_hash !== input.checkoutHash) {
+          throw new DomainError('Draft checkout hash mismatch', 'DRAFT_CONSISTENCY');
+        }
+        if (draft.transaction_id !== checkout.transactionId || draft.transaction_id !== input.transactionId) {
+          throw new DomainError('Draft transaction mismatch', 'DRAFT_CONSISTENCY');
+        }
+        if (draft.aud !== expectedAud) throw new DomainError('Draft audience mismatch', 'DRAFT_CONSISTENCY');
+        if (input.expectedUserReference && draft.sub !== input.expectedUserReference) {
+          throw new DomainError('Draft subject mismatch', 'DRAFT_CONSISTENCY');
+        }
+        if (draft.exp <= draft.iat || draft.exp * 1000 <= current.getTime()) {
+          throw new DomainError('Draft is inconsistent or expired', 'DRAFT_CONSISTENCY');
+        }
+        if (!draft.nonce || !draft.jti) throw new DomainError('Draft nonce/jti missing', 'DRAFT_CONSISTENCY');
+        const storedCheckout = await replayStore.getCheckoutDraft(draft.jti);
+        if (!storedCheckout || storedCheckout.transactionId !== draft.transaction_id || storedCheckout.checkoutHash !== draft.checkout_hash) {
+          throw new DomainError('Checkout draft jti/reference is unknown', 'DRAFT_CONSISTENCY');
+        }
+        return { valid: true as const, transactionId: checkout.transactionId, checkoutHash: input.checkoutHash };
+      }
+
+      const draft = parse(paymentMandatePayloadSchema, input.draft);
+      rejectSensitiveInstrument(draft.payment_instrument);
+      assertPayeeMatchesMerchant(draft.payee, checkout.merchant);
+      if (draft.checkout_hash !== input.checkoutHash) throw new DomainError('Draft checkout hash mismatch', 'DRAFT_CONSISTENCY');
+      if (draft.transaction_id !== checkout.transactionId || draft.transaction_id !== input.transactionId) {
+        throw new DomainError('Draft transaction mismatch', 'DRAFT_CONSISTENCY');
+      }
+      if (draft.aud !== expectedAud) throw new DomainError('Draft audience mismatch', 'DRAFT_CONSISTENCY');
+      if (input.expectedUserReference && draft.sub !== input.expectedUserReference) {
+        throw new DomainError('Draft subject mismatch', 'DRAFT_CONSISTENCY');
+      }
+      if (draft.exp <= draft.iat || draft.exp * 1000 <= current.getTime()) {
+        throw new DomainError('Draft is inconsistent or expired', 'DRAFT_CONSISTENCY');
+      }
+      if (!draft.nonce || !draft.jti) throw new DomainError('Draft nonce/jti missing', 'DRAFT_CONSISTENCY');
+      if (draft.payment_amount.amount_minor !== checkout.totals.totalMinor || draft.payment_amount.currency !== checkout.totals.currency) {
+        throw new DomainError('Payment draft differs from checkout', 'DRAFT_CONSISTENCY');
+      }
+      const checkoutDraft = await replayStore.getCheckoutDraft(draft.checkout_mandate_draft_id);
+      if (!checkoutDraft || checkoutDraft.transactionId !== draft.transaction_id || checkoutDraft.checkoutHash !== draft.checkout_hash) {
+        throw new DomainError('Checkout draft lineage is invalid', 'DRAFT_CONSISTENCY');
+      }
+      const storedPayment = replayStore.getPaymentDraft ? await replayStore.getPaymentDraft(draft.jti) : undefined;
+      if (!storedPayment) throw new DomainError('Payment draft jti/reference is unknown', 'DRAFT_CONSISTENCY');
+      if (
+        storedPayment.transactionId !== draft.transaction_id
+        || storedPayment.checkoutHash !== draft.checkout_hash
+        || storedPayment.checkoutMandateDraftId !== draft.checkout_mandate_draft_id
+        || storedPayment.payeeId !== draft.payee.id
+        || storedPayment.amountMinor !== draft.payment_amount.amount_minor
+        || storedPayment.currency !== draft.payment_amount.currency
+        || storedPayment.instrumentId !== draft.payment_instrument.id
+        || storedPayment.sub !== draft.sub
+        || storedPayment.aud !== draft.aud
+      ) {
+        throw new DomainError('Payment draft diverges from issued reference', 'DRAFT_CONSISTENCY');
+      }
       return { valid: true as const, transactionId: checkout.transactionId, checkoutHash: input.checkoutHash };
     },
   };
@@ -213,3 +337,5 @@ export * from './agent-trust.js';
 export * from './policy.js';
 export * from './autonomy.js';
 export * from './request-store.js';
+export * from './canonical.js';
+export * from './anchor-outbox.js';

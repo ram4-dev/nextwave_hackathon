@@ -3,14 +3,25 @@ import { DomainError } from '../domain/state-machine.js';
 import type { CheckoutSnapshot, MerchantSigner } from './types.js';
 
 const audience = 'ap2.checkout';
+const allowedLocalEnvs = new Set(['development', 'test']);
+
+function resolveNodeEnv(explicit?: string): string {
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+  return process.env.NODE_ENV ?? '';
+}
 
 export async function createLocalMerchantSigner(input: {
   privateJwk?: JsonWebKey;
   issuer: string;
+  /** Explicit environment override. When omitted, process.env.NODE_ENV is required and must be development/test. */
   nodeEnv?: string;
 }): Promise<MerchantSigner> {
-  if (input.nodeEnv === 'production') {
-    throw new DomainError('Local merchant signer is unavailable in production', 'MERCHANT_SIGNER_ENV');
+  const nodeEnv = resolveNodeEnv(input.nodeEnv);
+  if (!allowedLocalEnvs.has(nodeEnv)) {
+    throw new DomainError(
+      'Local merchant signer is unavailable outside development/test (set nodeEnv explicitly or NODE_ENV)',
+      'MERCHANT_SIGNER_ENV',
+    );
   }
   let privateJwk = input.privateJwk;
   if (!privateJwk) {
@@ -29,7 +40,7 @@ export async function createLocalMerchantSigner(input: {
   return {
     issuer: input.issuer,
     async signCheckout(payload) {
-      return new SignJWT(payload)
+      return new SignJWT(payload as unknown as Record<string, unknown>)
         .setProtectedHeader({ alg: 'ES256', kid, typ: 'JWT' })
         .setIssuer(input.issuer)
         .setAudience(audience)
@@ -40,9 +51,22 @@ export async function createLocalMerchantSigner(input: {
     async verifyCheckout(jwt) {
       try {
         const { payload, protectedHeader } = await jwtVerify(jwt, publicKey, {
-          issuer: input.issuer, audience, algorithms: ['ES256'], clockTolerance: 0,
+          issuer: input.issuer,
+          audience,
+          algorithms: ['ES256'],
+          clockTolerance: 0,
+          typ: 'JWT',
         });
         if (protectedHeader.alg !== 'ES256') throw new Error('Unexpected JWT algorithm');
+        if (protectedHeader.typ !== 'JWT') throw new Error('Unexpected JWT typ');
+        if (protectedHeader.kid !== kid) throw new Error('Unexpected JWT kid');
+        if (payload.iss !== input.issuer) throw new Error('Unexpected JWT iss');
+        if (payload.aud !== audience && !(Array.isArray(payload.aud) && payload.aud.includes(audience))) {
+          throw new Error('Unexpected JWT aud');
+        }
+        if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number' || payload.exp <= payload.iat) {
+          throw new Error('Unexpected JWT iat/exp');
+        }
         return payload as unknown as CheckoutSnapshot;
       } catch (error) {
         throw new DomainError(`Checkout JWT verification failed: ${(error as Error).message}`, 'CHECKOUT_JWT');
