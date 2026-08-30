@@ -8,6 +8,7 @@ export default tseslint.config(
       'dist/**',
       'web/dist/**',
       'node_modules/**',
+      'yuno_mock/**',
       '.codegraph/**',
       '.humanlayer/**',
       'coverage/**',

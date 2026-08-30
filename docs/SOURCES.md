@@ -59,5 +59,9 @@ Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
 | `@huggingface/transformers` feature extraction | https://github.com/huggingface/transformers.js | Local `pipeline('feature-extraction')`; preferred model `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384-d). Query text stays in-process. |
 | Credential short TTL default | 900s (product security rule) | `CREDENTIAL_TTL_SECONDS` |
 | Platform signing private key | Live: `KYA_SIGNING_PRIVATE_JWK` or `KYA_SIGNING_KEY_FILE` (secret-backed). Demo: process-local ephemeral. Never persist `d`/`privateJwk` in store.json | `credentials/signer.ts`, `JsonFileRepository` scrub |
+| Yuno OpenAPI pin | `https://docs.y.uno/openapi.json` · SHA-256 `6b4b1001cecb4cff1a808478da9142e16a78c3ee36ea14db23fb539e48f0da19` · 5675961 bytes · retrieved `2026-08-30T03:38:02Z` | `contracts/yuno/openapi.json`, `METADATA.md`, `yuno_mock`, generated types/validators |
+| Yuno docs repo pin | `https://github.com/yuno-payments/yuno-docs` @ `447bc3116475ffbbaedeb1a25d0acc9e50718c31` | Cross-check vs live OpenAPI download |
+| openapi-typescript | `7.13.0` | `src/providers/yuno/generated/openapi-types.ts` |
+| Ajv / ajv-formats | `8.20.0` / `3.0.1` | `src/providers/yuno/generated` request/response validators |
 
 Re-verify curated registry addresses and ABI before any live promotion.

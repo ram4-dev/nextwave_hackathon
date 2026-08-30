@@ -24,7 +24,17 @@
     "catalog:revoke": "tsx scripts/revoke-merchant-api-key.ts",
     "catalog:rotate": "tsx scripts/rotate-merchant-api-key.ts",
     "catalog:worker": "tsx scripts/reindex-catalog-worker.ts",
-    "catalog:harness": "tsx scripts/harness-acp-catalog.ts"
+    "catalog:harness": "tsx scripts/harness-acp-catalog.ts",
+    "yuno:contract:update": "node scripts/update-yuno-openapi.mjs",
+    "yuno:contract:verify": "node scripts/verify-yuno-openapi.mjs",
+    "yuno:contract:generate": "node scripts/generate-yuno-contract.mjs",
+    "yuno:contract:check-generated": "node scripts/generate-yuno-contract.mjs --check",
+    "yuno:mock:start": "npm --prefix yuno_mock start",
+    "yuno:mock:build": "npm --prefix yuno_mock run build",
+    "yuno:mock:typecheck": "npm --prefix yuno_mock run typecheck",
+    "yuno:mock:test": "npm --prefix yuno_mock test",
+    "yuno:mock:lint": "npm --prefix yuno_mock run lint",
+    "yuno:sandbox:readiness": "tsx scripts/yuno-sandbox-readiness.ts"
   },
   "engines": {
     "node": ">=20"
@@ -32,6 +42,8 @@
   "dependencies": {
     "@hono/node-server": "^1.14.4",
     "@huggingface/transformers": "^3.7.2",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "hono": "^4.8.5",
     "jose": "^6.0.11",
     "pg": "^8.16.3",
@@ -47,6 +59,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^9.31.0",
     "globals": "^16.3.0",
+    "openapi-typescript": "7.13.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tsx": "^4.20.3",

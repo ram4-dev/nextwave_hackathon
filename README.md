@@ -1,6 +1,6 @@
 # KYA — Know Your Agent
 
-Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). The current implementation covers that identity ceremony and a local mock Juno catalog search over PostgreSQL/pgvector. The next specified architecture removes Juno as the runtime catalog source: registered merchants will maintain their own feeds through ACP-compatible endpoints. Checkout, payment execution, settlement, and AP2 remain out of scope.
+Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). The current implementation covers that identity ceremony, a local mock Juno catalog search over PostgreSQL/pgvector, and provider-agnostic platform payments (F0–F7) against an independent `yuno_mock` REST process. Registered merchants maintain catalog feeds through ACP-compatible endpoints. Live Yuno sandbox, catalog checkout settlement, and AP2 remain out of scope or LIVE-NOT-EXECUTED.
 
 **Authoritative product scope:** [`FLOW.md`](./FLOW.md)
 
@@ -10,12 +10,16 @@ Local-agent authentication for buyer agents running on a user's PC. KYA binds a 
 | --- | --- |
 | **Code-complete** | Path implemented with tests |
 | **Demo-verified** | `npm test` + `npm run demo:ceremony` pass on labeled demo path |
-| **Live-not-executed** | Live wiring exists; CI does **not** run real KYC or public-chain writes |
+| **Live-not-executed** | Live wiring exists; CI does **not** run real KYC, public-chain writes, or live Yuno |
 | **Planned** | Product contract documented; no implementation is claimed |
 | **Specified** | Technical contract is reviewable; implementation is not claimed |
 | **Catalog-demo** | Offline fixture load + `POST /v1/catalog/search` verified locally when pgvector is provisioned |
 
 Default `KYA_MODE=demo`. Live connectors stay disabled until env is configured.
+
+**Payments (F6 + F7 readiness):** the root Hono app hosts a provider-agnostic platform payment API. An independent `yuno_mock` REST process implements the pinned Yuno OpenAPI snapshot. Agents use platform MCP tools that call only platform `/v1` over HTTP. F7 offline swap-readiness (`YUNO_PROVIDER_ENV`, fail-closed sandbox/production config, `npm run yuno:sandbox:readiness`) is implemented; a live Yuno sandbox contract run remains **LIVE-NOT-EXECUTED**. See [`docs/PAYMENTS.md`](./docs/PAYMENTS.md).
+
+**Legacy remote artifacts:** `a2y.html`, `mcp.py`, and `requirements.txt` are preserved unchanged from `origin/demo_mock` for migration traceability. They are not the canonical implementation for this delivery; the canonical implementation remains the TypeScript REST API described above.
 
 ## What the current MVP does (F0–F5)
 
@@ -27,6 +31,14 @@ Default `KYA_MODE=demo`. Live connectors stay disabled until env is configured.
 | F3 | Event watchers + JWS + challenge (`ownerOf` fail-closed) | Code-complete + demo-verified; live watcher wired |
 | F4 | Rotation / transfer rebind + Incode/Veriff adapters | Code-complete + demo-verified |
 | F5 | Mainnet gate (flags + live code/`getVersion`) | Code-complete |
+
+## Platform payments (Yuno F0–F7)
+
+| Phase | Delivery | Status |
+| --- | --- | --- |
+| F0–F5 | Pinned OpenAPI + independent `yuno_mock` REST (enrollment, payments, webhooks, post-pay) | Code-complete + demo-verified |
+| F6 | Platform `/v1` + `/internal` on root Hono, adapter, authz, durable idempotency, real-socket E2E | Code-complete + demo-verified |
+| F7 | Offline sandbox/production readiness gate; live Yuno swap | Code-complete offline; live-not-executed |
 
 ## Juno catalog search (J0–J2)
 
@@ -129,6 +141,10 @@ ABI: [`abis/IdentityRegistry.json`](./abis/IdentityRegistry.json) from [erc-8004
 ## Docs
 
 - [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) — architecture, status vocabulary, live config
+- [`docs/PAYMENTS.md`](./docs/PAYMENTS.md) — F6 platform payments + F7 swap-readiness
+- [`docs/YUNO_SANDBOX_READINESS.md`](./docs/YUNO_SANDBOX_READINESS.md) — offline sandbox/production config gate
+- [`docs/YUNO_API_MOCK_MIGRATION_SPEC.md`](./docs/YUNO_API_MOCK_MIGRATION_SPEC.md) — migration phases F0–F7
+- [`docs/YUNO_F0_CONTRACT_SPEC.md`](./docs/YUNO_F0_CONTRACT_SPEC.md) — pinned OpenAPI contract
 - [`docs/SOURCES.md`](./docs/SOURCES.md) — provenance for every external dependency
 - [`docs/SKILLS.md`](./docs/SKILLS.md) — skill search/install inventory (2026-08-29)
 - [`docs/BROWSER_WALLET_MIGRATION_SPEC.md`](./docs/BROWSER_WALLET_MIGRATION_SPEC.md) — accepted and implemented wallet migration
@@ -152,6 +168,11 @@ npm run catalog:rotate
 npm run catalog:worker
 npm run catalog:harness
 npm run catalog:load
+npm run yuno:contract:verify
+npm run yuno:contract:check-generated
+npm run yuno:mock:start   # independent mock on :8080
+npm run yuno:mock:test
+npm run yuno:sandbox:readiness   # offline F7 config gate (never live)
 ```
 
 ## License

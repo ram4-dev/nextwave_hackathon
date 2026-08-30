@@ -14,6 +14,7 @@ Repository-wide engineering guidance for human and AI contributors. Prefer this 
 - The repository contains a TypeScript application: a Hono API, a Vite/React ceremony wizard, and Base/ERC-8004, KYC, credential, and persistence modules.
 - npm scripts provide the reproducible lint, typecheck, test, build, and demo-ceremony workflows documented in `README.md`.
 - Demo mode is locally verified; real KYC and browser-wallet on-chain writes remain explicitly marked live-not-executed until credentials and external authorization are provided.
+- Platform payments F0–F7 (independent `yuno_mock` + root `/v1` payment API) are implemented; live Yuno sandbox remains LIVE-NOT-EXECUTED without user credentials.
 - External protocol, provider, address, and ABI provenance is recorded in `docs/SOURCES.md`; do not replace authoritative sources with assumptions.
 
 ## Development workflow

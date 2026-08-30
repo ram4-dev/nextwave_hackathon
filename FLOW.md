@@ -1,5 +1,7 @@
 # FLOW — Autenticación KYA y descubrimiento de catálogo de merchants
 
+> **Nota de alcance:** ver [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) para el estado actual. Este documento describe el flujo de producto. `KYA_MODE=demo` ejercita la ceremonia con stubs etiquetados; `KYA_MODE=live` cablea wallet/SIWE, KYC hospedado y registry (CI no ejecuta KYC real ni writes públicos). Pagos F0–F7 viven en la plataforma + `yuno_mock` (sandbox live Yuno: LIVE-NOT-EXECUTED).
+
 ## Decisión ejecutiva
 
 **KYC es solo para personas** y, en condiciones normales, **se hace una sola vez**. La persona autoriza uno o más agentes compradores locales que corren en su PC. La plataforma KYA vincula un **Principal ID** seudónimo verificado a un **Agent ID ERC-8004** y a la **clave pública local** del agente.
@@ -14,20 +16,23 @@ un agente consumidor consulta, en lenguaje natural, un catálogo de comercios
 que aceptan **Juno** como proveedor o método de pago. El primer alcance usa un
 **dataset mock de Juno** (10 ofertas ARS en español, varios merchants de
 Argentina) cargado offline en PostgreSQL y un índice vectorial derivado. No
-conecta con Juno real ni ejecuta compras o pagos.
+conecta con Juno real ni ejecuta checkout de catálogo.
 
-**Dirección de arquitectura aprobada, todavía no implementada:** Juno no será
-la fuente runtime. Cada merchant registrado mantendrá su feed mediante las rutas
-ACP de Feeds y Products. El catálogo relacional pasará a estado actual
-incremental por feed y un worker derivará embeddings desde una outbox
-transaccional. La búsqueda HNSW/lexical y la hidratación SQL se conservan.
+**Dirección de arquitectura aprobada:** Juno no será la fuente runtime del
+catálogo. Cada merchant registrado mantiene su feed mediante las rutas ACP de
+Feeds y Products. El catálogo relacional usa estado actual incremental por feed
+y un worker deriva embeddings desde una outbox transaccional. La búsqueda
+HNSW/lexical y la hidratación SQL se conservan.
 
-| Implementado hoy | Extensión de catálogo | Fuera de alcance |
+Los pagos de plataforma (F0–F7) son ortogonales al catálogo: API provider-agnostic
+en el Hono raíz, mock REST independiente (`yuno_mock`) y swap-readiness F7 offline.
+
+| Implementado hoy | Extensión de catálogo / pagos | Fuera de alcance |
 | --- | --- | --- |
-| Ceremonia de identidad (persona ↔ agente local ↔ KYA) | Dataset mock de comercios y productos Juno | Integración con la API real de Juno |
-| Enrollment, credencial KYA, autenticación del agente | Pipeline offline de normalización e indexación vectorial | Checkout, captura, pago y liquidación |
-| Binding Principal ID + ERC-8004 + clave local | Búsqueda semántica de productos entre merchants | AP2 y otros protocolos de pago |
-| Consumo del Identity Registry curated | Resultados con precio, disponibilidad y frescura de catálogo | Deploy de registry propio; Hardhat/Foundry en runtime |
+| Ceremonia de identidad (persona ↔ agente local ↔ KYA; demo + live wiring) | Dataset mock de comercios y productos Juno | Integración con la API real de Juno (catálogo) |
+| Enrollment, credencial KYA, autenticación del agente | Pipeline offline de normalización e indexación vectorial | AP2 y otros protocolos de pago |
+| Binding Principal ID + ERC-8004 + clave local | Búsqueda semántica de productos entre merchants | Deploy de registry propio; Hardhat/Foundry en runtime |
+| Consumo del Identity Registry curated | Pagos F0–F7 (platform + yuno_mock; sandbox live LIVE-NOT-EXECUTED) | Liquidación on-chain de pagos |
 
 **Actores de la ceremonia (4):** Usuario · Agente local · Plataforma KYA · Proveedor KYC.  
 ERC-8004 es **infraestructura interna** de Plataforma KYA, no un quinto actor de negocio.

@@ -16,13 +16,18 @@ Hono API (:8787)
   ├─ agentURI host (ERC-8004 registration-v1, no PII)
   ├─ credential issue/verify + JWKS
   ├─ challenge-response (ownerOf fail-closed in live)
-  └─ public POST /v1/catalog/search (no auth/KYC; optional PostgreSQL catalog)
+  ├─ public POST /v1/catalog/search (no auth/KYC; optional PostgreSQL catalog)
+  └─ payments (F6) — provider-agnostic /v1 + /internal/webhooks/yuno
         │
         ▼
 Domain + JSON repository (.kya-data)
   Principal · Enrollment · Credential · Nonce · KYC session · Event cursor
+Payments JSON store (.kya-data/payments-store.json; AES vault tokens)
 Catalog PostgreSQL/pgvector (separate from KyaStore)
   versions · merchants · products · search projections + HNSW/GIN
+        │
+        ▼
+YunoHttpClient → YUNO_BASE_URL (independent yuno_mock or future live Yuno)
         │
         ▼
 Base (live only)
@@ -33,7 +38,7 @@ Base (live only)
 
 ### Domain states
 
-**Enrollment:** `awaiting_device` → `awaiting_human` → (`awaiting_kyc`?) → `awaiting_fingerprint` → `awaiting_register` → `awaiting_onchain` → `bound` ⇄ `suspended` → `revoked`  
+**Enrollment:** `awaiting_device` → `awaiting_human` → (`awaiting_kyc`?) → `awaiting_fingerprint` → `awaiting_register` → `awaiting_onchain` → `bound` ⇄ `suspended` → `revoked`
 (`awaiting_fingerprint` → `bound` for key rotation / transfer rebind without minting a new Agent ID)
 
 **KYC (person):** `pending` · `verified` · `needs_review` · `rejected` · `expired`
@@ -146,8 +151,17 @@ mutations per merchant. Manual key revoke/rotate: `catalog:revoke` and
 Demo steps are labeled. Live mode wires `BrowserWalletConnector` (SIWE + direct
 registry transaction), requires Base Sepolia, and never calls `confirm-demo`.
 
+## Platform payments (F0–F7)
+
+Provider-agnostic payment routes mount on the same root Hono app as KYA/catalog.
+Blank/unset `YUNO_BASE_URL` leaves ceremony and catalog up; payment routes return
+503. See [`PAYMENTS.md`](./PAYMENTS.md) and
+[`YUNO_API_MOCK_MIGRATION_SPEC.md`](./YUNO_API_MOCK_MIGRATION_SPEC.md).
+
 ## Related docs
 
 - [`FLOW.md`](../FLOW.md) — product source of truth
+- [`PAYMENTS.md`](./PAYMENTS.md) — F6 platform payments architecture
+- [`YUNO_API_MOCK_MIGRATION_SPEC.md`](./YUNO_API_MOCK_MIGRATION_SPEC.md) — F0–F7 migration
 - [`SOURCES.md`](./SOURCES.md) — external provenance
 - [`SKILLS.md`](./SKILLS.md) — skill search/install inventory (2026-08-29)

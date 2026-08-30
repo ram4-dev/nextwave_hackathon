@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import path from 'node:path';
 import pg from 'pg';
+import { createPaymentRuntime } from '../api/payments/runtime.js';
 import { MerchantFeedAuthorizer } from '../catalog/acp-contract.js';
 import { TransformersEmbeddingProvider } from '../catalog/embedding.js';
 import { acpIngestionOptionsFromConfig } from '../catalog/ingestion.js';
@@ -8,16 +9,18 @@ import { PostgresAcpIngestionService, PostgresMerchantKeyStore } from '../catalo
 import { PostgresCatalogRepository } from '../catalog/postgres-repository.js';
 import { CatalogSearchService } from '../catalog/search.js';
 import { loadConfig, type AppConfig } from '../config/env.js';
-import { JsonFileRepository } from '../persistence/repository.js';
 import { ensureSigningKey } from '../credentials/jws.js';
-import { createApp } from './app.js';
+import { FilePaymentRepository } from '../persistence/payments/file.js';
+import { JsonFileRepository } from '../persistence/repository.js';
+import type { Repository } from '../persistence/repository.js';
+import { safeProviderHostname } from '../providers/yuno/sandbox-readiness.js';
 import {
   assertRegistryReadyForChain,
   createRegistryPublicClient,
   selectLiveWatcherChains,
 } from '../registry/identity.js';
 import { startEventWatcher } from '../registry/events.js';
-import type { Repository } from '../persistence/repository.js';
+import { createApp } from './app.js';
 
 export async function startLiveEventWatchers(
   config: AppConfig,
@@ -60,6 +63,24 @@ async function main() {
   const dataFile = path.resolve(config.KYA_DATA_DIR, 'store.json');
   const repo = new JsonFileRepository(dataFile);
   await ensureSigningKey(repo, config);
+
+  const paymentRepo = new FilePaymentRepository(
+    path.resolve(config.PAYMENT_DATA_DIR, 'payments-store.json'),
+  );
+  const payment = createPaymentRuntime(config, { repo: paymentRepo });
+  if (!payment && config.YUNO_BASE_URL) {
+    console.warn(
+      `YUNO_PROVIDER_ENV=${config.YUNO_PROVIDER_ENV} base URL set but payment runtime incomplete — payment routes return 503; ceremony routes still run`,
+    );
+  } else if (payment) {
+    const host = safeProviderHostname(config.YUNO_BASE_URL);
+    console.log(
+      host
+        ? `Payments enabled (providerEnv=${config.YUNO_PROVIDER_ENV}, host=${host})`
+        : `Payments enabled (providerEnv=${config.YUNO_PROVIDER_ENV})`,
+    );
+  }
+
   const catalogPool = config.CATALOG_DATABASE_URL
     ? new pg.Pool({ connectionString: config.CATALOG_DATABASE_URL })
     : undefined;
@@ -77,7 +98,13 @@ async function main() {
     catalogPool && config.CATALOG_ACP_ENABLED
       ? new PostgresAcpIngestionService(catalogPool, acpIngestionOptionsFromConfig(config))
       : undefined;
-  const { app } = createApp(repo, config, { catalogSearch, acpAuthorizer, acpIngestion });
+
+  const { app } = createApp(repo, config, {
+    catalogSearch,
+    acpAuthorizer,
+    acpIngestion,
+    payment,
+  });
 
   let stopAllWatchers: (() => void) | undefined;
 
@@ -106,11 +133,15 @@ async function main() {
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
 
-  console.log(`KYA server listening on :${config.PORT} mode=${config.KYA_MODE}`);
+  console.log(
+    `KYA server listening on :${config.PORT} mode=${config.KYA_MODE} (COOP=same-origin-allow-popups)`,
+  );
   serve({ fetch: app.fetch, port: config.PORT });
 }
 
 main().catch((err) => {
-  console.error(err);
+  // Never dump full Error/Zod objects — messages are already sanitized by loadConfig.
+  const msg = err instanceof Error ? err.message : 'startup failed';
+  console.error(msg);
   process.exit(1);
 });
