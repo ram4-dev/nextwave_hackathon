@@ -16,7 +16,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "demo:ceremony": "tsx scripts/demo-ceremony.ts",
-    "mandates:create": "tsx scripts/mandates-create.ts mandates:create"
+    "mandates:create": "tsx scripts/mandates-create.ts mandates:create",
+    "contracts:compile": "hardhat compile",
+    "contracts:test": "hardhat test",
+    "contracts:deploy:bsc-testnet": "hardhat run scripts/deploy-mandate-anchor.ts --network bscTestnet"
   },
   "engines": {
     "node": ">=20"
@@ -24,6 +27,7 @@
   "dependencies": {
     "@base-org/account": "^2.4.0",
     "@hono/node-server": "^1.14.4",
+    "@openzeppelin/contracts": "^5.6.1",
     "hono": "^4.8.5",
     "jose": "^6.0.11",
     "viem": "^2.33.2",
@@ -34,12 +38,14 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
     "@types/node": "^22.16.5",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^9.31.0",
     "globals": "^16.3.0",
+    "hardhat": "^3.15.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tsx": "^4.20.3",

@@ -96,6 +96,7 @@ npm run mandates:create -- --input ./fixtures/validated-checkout.json
 The input fixture is intentionally fake. `MERCHANT_SIGNING_PRIVATE_JWK` may provide a P-256 private JWK in development/test. Without it, development/test generates a process-local key; production rejects the local signer and requires an injected `MerchantSigner` backed by the deployment's secret provider or HSM. To print JWTs in an explicit development/test session only, set `MANDATES_ALLOW_FULL_OUTPUT=true`; normal output is redacted. Local replay metadata goes to ignored `.mandate-artifacts/` and contains no JWTs, payment credentials, or private keys.
 
 See [`docs/AP2_MANDATES.md`](./docs/AP2_MANDATES.md) for flow and integration boundaries.
+For the local JSON data model and the configuration needed before a blockchain anchor, see [`docs/AP2_IMPLEMENTATION_SETUP.md`](./docs/AP2_IMPLEMENTATION_SETUP.md).
 
 ## License
 
