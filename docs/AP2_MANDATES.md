@@ -11,7 +11,7 @@ This phase is a domain library, not an HTTP/MCP integration. Its deterministic f
 | Implemented | Pending / out of scope |
 | --- | --- |
 | Merchant ES256 Checkout JWT + draft payloads with canonical payload-hash binding | Live Credential Provider / production Trusted Surface UI |
-| Immutable open-mandate activation bound to canonical payload hash | Durable Supabase registry for open mandates in multi-instance prod |
+| Immutable open-mandate activation bound to canonical payload hash | Durable Postgres registry for open mandates in multi-instance prod |
 | Per-mandate policy budget/ops/frequency reservation (shared registry ledger in-process) | Live payment execution / Yuno |
 | Hash-only outbox + fake anchor worker; all six evidence hashes are canonical and non-zero before enqueue/anchor (processing lease; no real RPC) | Real BSC/Base RPC anchoring and deployed signer |
 | Permanently mutually exclusive admin / pauser / anchorer roles on `MandateAnchor`, including later grants and rotations | Production KMS/HSM agent signing |

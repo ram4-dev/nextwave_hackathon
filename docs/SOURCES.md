@@ -63,9 +63,9 @@ Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
 | OpenZeppelin Contracts 5 AccessControl | https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControl | `contracts/MandateAnchor.sol` roles (`DEFAULT_ADMIN_ROLE`, custom pauser/anchorer) |
 | Hardhat 3 | https://hardhat.org/docs | `hardhat.config.ts`, `npm run contracts:compile` / `contracts:test` |
 | BNB Chain BSC Testnet (chain 97) | https://docs.bnbchain.org/bnb-smart-chain/developers/wallet-configuration/ | Documented anchor network for mandate evidence (live writes out of scope for fake worker) |
-| Supabase Postgres RLS | https://supabase.com/docs/guides/database/postgres/row-level-security | `mandate_requests` / `mandate_policy_reservations` RLS + revoke from `anon`/`authenticated` |
-| Supabase Database Functions | https://supabase.com/docs/guides/database/functions | `create_mandate_request`, `reserve_mandate_policy` RPCs |
-| Supabase Migrations | https://supabase.com/docs/guides/deployment/database-migrations | Unique versions: `20260830000100_create_mandate_policy_ledger.sql`, `20260830000200_create_mandate_requests.sql`, then `20260830235959_upgrade_mandate_schema_v2.sql` |
+| `pg` client (mandates) | https://node-postgres.com/ | `PgMandatePolicyLedger`, `PgMandateRequestStore`, parameterized SQL calling `create_mandate_request`/`reserve_mandate_policy`/`release_mandate_policy_reservation` |
+| Postgres advisory locks | https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS | `pg_advisory_xact_lock` deterministic pair-ordering in `reserve_mandate_policy` / `release_mandate_policy_reservation` |
+| Mandate schema migration | Self-hosted, tracked by `mandate_schema_migrations` (`src/mandates/migrate.ts`) | `migrations/mandates/001_mandate_schema.sql` |
 | Yuno OpenAPI pin | `https://docs.y.uno/openapi.json` · SHA-256 `6b4b1001cecb4cff1a808478da9142e16a78c3ee36ea14db23fb539e48f0da19` · 5675961 bytes · retrieved `2026-08-30T03:38:02Z` | `contracts/yuno/openapi.json`, `METADATA.md`, `yuno_mock`, generated types/validators |
 | Yuno docs repo pin | `https://github.com/yuno-payments/yuno-docs` @ `447bc3116475ffbbaedeb1a25d0acc9e50718c31` | Cross-check vs live OpenAPI download |
 | openapi-typescript | `7.13.0` | `src/providers/yuno/generated/openapi-types.ts` |

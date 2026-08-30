@@ -321,7 +321,7 @@ describe('prompt hash-only persistence', () => {
   });
 
   it('migration SQL does not define a plaintext prompt column or RPC arg', async () => {
-    const sql = await readFile(path.join(process.cwd(), 'supabase/migrations/20260830000200_create_mandate_requests.sql'), 'utf8');
+    const sql = await readFile(path.join(process.cwd(), 'migrations/mandates/001_mandate_schema.sql'), 'utf8');
     expect(sql).toContain('prompt_hash');
     expect(sql).toContain('encrypted_prompt_ref');
     expect(sql).not.toMatch(/\bp_prompt\b/);

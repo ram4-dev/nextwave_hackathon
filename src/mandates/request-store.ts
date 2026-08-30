@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import pg from 'pg';
 import { z } from 'zod';
 import { DomainError } from '../domain/state-machine.js';
 
@@ -94,32 +94,48 @@ export async function receiveMandateRequest(
   return store.create(record);
 }
 
-export class SupabaseMandateRequestStore implements MandateRequestStore {
-  constructor(private readonly client: SupabaseClient) {}
+/** Minimal shape this store needs from a `pg` pool/client — kept narrow so tests can fake it. */
+export interface MandateRequestQueryable {
+  query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }>;
+}
+
+export class PgMandateRequestStore implements MandateRequestStore {
+  constructor(private readonly client: MandateRequestQueryable) {}
 
   async create(input: MandateRequestStoreInput): Promise<MandateRequestRecord> {
     assertStoreInput(input);
-    const { data, error } = await this.client.rpc('create_mandate_request', {
-      p_id: input.id,
-      p_transaction_id: input.transactionId,
-      p_agent_id: input.agentId,
-      p_tenant_id: input.tenantId,
-      p_prompt_hash: input.promptHash,
-      p_encrypted_prompt_ref: input.encryptedPromptRef ?? null,
-      p_received_at: input.receivedAt,
-    }).single();
-    if (error || !data) {
-      throw new DomainError(`Supabase mandate request write failed: ${error?.message ?? 'empty result'}`, 'MANDATE_REQUEST_STORE');
+    let rows: unknown[];
+    try {
+      const result = await this.client.query(
+        'select * from create_mandate_request($1,$2,$3,$4,$5,$6,$7)',
+        [
+          input.id,
+          input.transactionId,
+          input.agentId,
+          input.tenantId,
+          input.promptHash,
+          input.encryptedPromptRef ?? null,
+          input.receivedAt,
+        ],
+      );
+      rows = result.rows;
+    } catch (error) {
+      throw new DomainError(`Mandate request write failed: ${(error as Error).message}`, 'MANDATE_REQUEST_STORE');
     }
-    const row = data as {
-      id: string;
-      transaction_id: string;
-      agent_id: string;
-      tenant_id: string;
-      prompt_hash: string;
-      encrypted_prompt_ref: string | null;
-      received_at: string;
-    };
+    const row = rows[0] as
+      | {
+          id: string;
+          transaction_id: string;
+          agent_id: string;
+          tenant_id: string;
+          prompt_hash: string;
+          encrypted_prompt_ref: string | null;
+          received_at: string;
+        }
+      | undefined;
+    if (!row) {
+      throw new DomainError('Mandate request write failed: empty result', 'MANDATE_REQUEST_STORE');
+    }
     return {
       id: row.id,
       transactionId: row.transaction_id,
@@ -133,13 +149,12 @@ export class SupabaseMandateRequestStore implements MandateRequestStore {
   }
 }
 
-export function createSupabaseMandateRequestStore(env: NodeJS.ProcessEnv = process.env): SupabaseMandateRequestStore {
-  const url = env.SUPABASE_URL;
-  const secretKey = env.SUPABASE_SECRET_KEY;
-  if (!url || !secretKey || url.includes('<') || secretKey.includes('<')) {
-    throw new DomainError('SUPABASE_URL and SUPABASE_SECRET_KEY must be configured', 'SUPABASE_CONFIG');
+export function createPgMandateRequestStore(env: NodeJS.ProcessEnv = process.env): PgMandateRequestStore {
+  const url = env.MANDATES_DATABASE_URL;
+  if (!url || url.includes('<')) {
+    throw new DomainError('MANDATES_DATABASE_URL must be configured', 'MANDATES_DATABASE_CONFIG');
   }
-  return new SupabaseMandateRequestStore(createClient(url, secretKey, { auth: { persistSession: false, autoRefreshToken: false } }));
+  return new PgMandateRequestStore(new pg.Pool({ connectionString: url }));
 }
 
 export class InMemoryMandateRequestStore implements MandateRequestStore {

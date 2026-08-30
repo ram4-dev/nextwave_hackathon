@@ -6,7 +6,7 @@ import {
   InMemoryMandateRequestStore,
   InMemoryOpenMandateRegistry,
   MandatePolicyEvaluator,
-  SupabaseMandatePolicyLedger,
+  PgMandatePolicyLedger,
   receiveMandateRequest,
   type CheckoutSnapshot,
   type OpenMandateConstraints,
@@ -198,26 +198,24 @@ describe('fourth remediation: authoritative reservation balance', () => {
     expect(results.map((result) => result.remainingBudgetMinor).sort((a, b) => a - b)).toEqual([70, 90]);
   });
 
-  it('uses the Supabase reservation RPC result directly without a separate stale read', async () => {
-    const single = vi.fn(async () => ({ data: { remaining_budget_minor: '50' }, error: null }));
-    const rpc = vi.fn(() => ({ single }));
-    const ledger = new SupabaseMandatePolicyLedger({ rpc } as unknown as import('@supabase/supabase-js').SupabaseClient);
+  it('uses the Postgres reservation RPC result directly without a separate stale read', async () => {
+    const query = vi.fn(async () => ({ rows: [{ remaining_budget_minor: '50' }] }));
+    const ledger = new PgMandatePolicyLedger({ query });
     const value = constraints({ supplierIds: undefined, allowedPisp: undefined });
     await expect(ledger.reserve({
-      checkoutMandateId: 'checkout_supabase',
-      paymentMandateId: 'payment_supabase',
-      transactionId: 'txn_supabase',
+      checkoutMandateId: 'checkout_postgres',
+      paymentMandateId: 'payment_postgres',
+      transactionId: 'txn_postgres',
       amountMinor: 20,
       now,
       checkoutConstraints: value,
       paymentConstraints: value,
     })).resolves.toEqual({ remainingBudgetMinor: 50 });
-    expect(rpc).toHaveBeenCalledTimes(1);
-    expect(rpc).toHaveBeenCalledWith('reserve_mandate_policy', expect.objectContaining({
-      p_transaction_id: 'txn_supabase',
-      p_amount_minor: 20,
-    }));
-    expect(single).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('reserve_mandate_policy'),
+      expect.arrayContaining(['txn_postgres', 20]),
+    );
   });
 });
 
