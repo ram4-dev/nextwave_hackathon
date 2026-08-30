@@ -24,7 +24,7 @@ contract MandateAnchor is AccessControl, Pausable {
 
     constructor(address admin, address pauser, address anchorer) {
         require(admin != address(0) && pauser != address(0) && anchorer != address(0), "zero address");
-        require(admin != anchorer, "admin must differ from worker");
+        require(admin != pauser && admin != anchorer && pauser != anchorer, "roles must be distinct");
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(PAUSER_ROLE, pauser);
         _grantRole(ANCHORER_ROLE, anchorer);
