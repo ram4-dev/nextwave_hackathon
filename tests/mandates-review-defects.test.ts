@@ -237,7 +237,7 @@ describe('review defect 3: safe upgrade migration', () => {
     `);
 
     const upgradeSql = await readFile(
-      path.join(process.cwd(), 'supabase/migrations/20260830_upgrade_mandate_schema_v2.sql'),
+      path.join(process.cwd(), 'supabase/migrations/20260830120000_upgrade_mandate_schema_v2.sql'),
       'utf8',
     );
     // Rewrite public. -> current schema for isolated test
