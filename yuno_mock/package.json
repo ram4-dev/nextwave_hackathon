@@ -1,0 +1,19 @@
+{
+  "name": "yuno-mcp-mock",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "smoke-test": "node scripts/smoke-test.js",
+    "test:customers": "node scripts/test-customers.js",
+    "test:checkout": "node scripts/test-checkout.js",
+    "test:payments": "node scripts/test-payments.js",
+    "test:merchants": "node scripts/test-merchants.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@yuno-payments/agent-toolkit": "^0.1.2",
+    "zod": "^4.5.4"
+  }
+}
