@@ -26,6 +26,8 @@ export type NetworkMode = 'demo' | 'sepolia' | 'mainnet';
 
 export interface Principal {
   id: string;
+  /** Stable CDP end-user identifier; pseudonymous, never email or token. */
+  cdpUserId?: string;
   ownerAddress: `0x${string}`;
   kycStatus: KycNormalizedStatus;
   kycProvider?: string;
@@ -39,19 +41,55 @@ export interface Principal {
 
 export interface AgentEnrollment {
   agentUuid: string;
-  deviceCode: string;
+  /** SHA-256 hex of agent-held device_code — never store plaintext. */
+  deviceCodeHash: string;
+  /** SHA-256 hex of human user_code — never store plaintext. */
+  userCodeHash: string;
+  pairingExpiresAt: string;
+  pollIntervalSeconds: number;
+  lastPollAt?: string;
+  claimedAt?: string;
+  /** Set when the identity credential was delivered once via device poll. */
+  credentialDeliveredAt?: string;
+  pairingDeniedAt?: string;
   principalId?: string;
   status: EnrollmentStatus;
   publicJwk: JsonWebKey;
   thumbprint: string;
   keystoreProvider: KeystoreProviderKind;
   fingerprintApprovedAt?: string;
+  /** Hash binding the one executable registration intent to this enrollment. */
+  registrationIntentHash?: string;
+  registrationUserOpHash?: `0x${string}`;
+  registrationTransactionHash?: `0x${string}`;
+  /** Set only after CDP reports `complete` with the matching non-reverted receipt. */
+  registrationReceiptConfirmedAt?: string;
   agentRegistry?: string;
   agentId?: string;
   owner?: `0x${string}`;
   agentUriPath: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Metadata only — never persist the raw access JWT. */
+export interface AccessTokenRecord {
+  jti: string;
+  agentUuid: string;
+  principalId: string;
+  credentialJti: string;
+  jkt: string;
+  scopes: string[];
+  status: 'active' | 'revoked' | 'expired';
+  issuedAt: string;
+  expiresAt: string;
+}
+
+/** Atomic DPoP proof jti ledger — store hash only. */
+export interface DpopReplayRecord {
+  jtiHash: string;
+  consumedAt: string;
+  expiresAt: string;
 }
 
 export interface KyaCredentialRecord {
@@ -71,7 +109,7 @@ export interface KyaCredentialRecord {
 
 export interface AuthNonce {
   nonce: string;
-  purpose: 'siwe' | 'challenge' | 'enrollment';
+  purpose: 'challenge' | 'enrollment';
   createdAt: string;
   expiresAt: string;
   consumedAt?: string;
@@ -111,6 +149,26 @@ export interface ProcessedEvent {
   eventName: 'Registered' | 'Transfer';
   processedAt: string;
   payload: Record<string, string>;
+}
+
+/**
+ * A confirmed registry event that arrived before its UserOperation can be
+ * authoritatively resolved. This is deliberately narrow, pseudonymous chain
+ * evidence; it lets a restarted watcher retry without trusting a frontend tx.
+ */
+export interface PendingRegistryEvent {
+  id: string;
+  chainId: number;
+  registryAddress: `0x${string}`;
+  agentId: string;
+  agentURI: string;
+  owner: `0x${string}`;
+  txHash: `0x${string}`;
+  logIndex: number;
+  blockNumber: bigint;
+  publicBaseUrl?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentUriDocument {

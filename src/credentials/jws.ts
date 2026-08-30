@@ -79,7 +79,6 @@ export async function issueKyaCredential(
     owner: `0x${string}`;
   },
 ): Promise<{ token: string; record: KyaCredentialRecord }> {
-  const key = await ensureSigningKey(repo, config);
   const now = Math.floor(Date.now() / 1000);
   const jti = newId('cred');
   const exp = now + config.CREDENTIAL_TTL_SECONDS;
@@ -104,10 +103,7 @@ export async function issueKyaCredential(
 
   assertNoPiiInClaims(claims);
 
-  const privateKey = await importActivePrivateKey(key);
-  const token = await new jose.SignJWT({ ...claims })
-    .setProtectedHeader({ alg: 'ES256', kid: key.kid, typ: 'JWT' })
-    .sign(privateKey);
+  const token = await signCredentialClaims(repo, config, claims);
 
   const record: KyaCredentialRecord = {
     id: jti,
@@ -137,18 +133,67 @@ export async function issueKyaCredential(
   return { token, record };
 }
 
+/** Re-sign existing active credential claims without mutating credential state. */
+export async function reissueActiveKyaCredential(
+  repo: Repository,
+  config: AppConfig,
+  record: KyaCredentialRecord,
+): Promise<string> {
+  const issuedAt = Math.floor(Date.parse(record.issuedAt) / 1000);
+  const expiresAt = Math.floor(Date.parse(record.expiresAt) / 1000);
+  if (record.status !== 'active' || !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) {
+    throw new DomainError('Credential is not active', 'JWT_STATUS');
+  }
+  const claims: CredentialClaims = {
+    iss: config.KYA_ISSUER,
+    aud: config.KYA_AUDIENCE,
+    sub: record.agentUuid,
+    iat: issuedAt,
+    nbf: issuedAt,
+    exp: expiresAt,
+    jti: record.jti,
+    principal_id: record.principalId,
+    agentRegistry: record.agentRegistry,
+    agentId: record.agentId,
+    owner: record.owner,
+    status: 'active',
+    status_ref: record.statusRef,
+    cnf: { jkt: record.thumbprint },
+  };
+  return signCredentialClaims(repo, config, claims);
+}
+
+async function signCredentialClaims(
+  repo: Repository,
+  config: AppConfig,
+  claims: CredentialClaims,
+): Promise<string> {
+  assertNoPiiInClaims(claims);
+  const key = await ensureSigningKey(repo, config);
+  const privateKey = await importActivePrivateKey(key);
+  return new jose.SignJWT({ ...claims })
+    .setProtectedHeader({ alg: 'ES256', kid: key.kid, typ: 'KYA-CREDENTIAL+JWT' })
+    .sign(privateKey);
+}
+
 export async function verifyKyaCredential(
   repo: Repository,
   config: AppConfig,
   token: string,
   opts?: { expectAudience?: string },
 ): Promise<CredentialClaims> {
+  if (token.length < 16 || token.length > 16_384) {
+    throw new DomainError('Invalid credential token', 'JWT_VERIFY');
+  }
   const header = jose.decodeProtectedHeader(token);
-  if (!header.alg || !ALLOWED_ALGS.has(header.alg)) {
+  if (!header.alg || !ALLOWED_ALGS.has(header.alg) || header.alg !== 'ES256') {
     throw new DomainError('Disallowed JWT algorithm', 'JWT_ALG');
   }
-  if (header.alg === 'none') {
-    throw new DomainError('alg none rejected', 'JWT_ALG');
+  if (header.typ !== 'KYA-CREDENTIAL+JWT') {
+    throw new DomainError('Invalid credential typ', 'JWT_TYP');
+  }
+  if (!header.kid) {
+    throw new DomainError('Missing signing kid', 'JWT_KID');
   }
 
   const store = await repo.getStore();
@@ -177,6 +222,7 @@ export async function verifyKyaCredential(
           issuer: config.KYA_ISSUER,
           audience: opts?.expectAudience ?? config.KYA_AUDIENCE,
           algorithms: ['ES256'],
+          typ: 'KYA-CREDENTIAL+JWT',
           clockTolerance: 5,
         })
       ).payload;
@@ -206,6 +252,31 @@ export async function verifyKyaCredential(
   }
   if (record.status === 'expired' || new Date(record.expiresAt).getTime() <= Date.now()) {
     throw new DomainError('Credential expired', 'JWT_EXPIRED');
+  }
+  if (String(payload.sub ?? '') !== record.agentUuid) {
+    throw new DomainError('Credential subject mismatch', 'JWT_STATUS');
+  }
+  if (String(payload.principal_id ?? '') !== record.principalId) {
+    throw new DomainError('Credential principal mismatch', 'JWT_STATUS');
+  }
+  const cnf = payload.cnf as { jkt?: string } | undefined;
+  if (!cnf?.jkt || cnf.jkt !== record.thumbprint) {
+    throw new DomainError('Credential cnf mismatch', 'JWT_STATUS');
+  }
+  if (String(payload.agentRegistry ?? '') !== record.agentRegistry) {
+    throw new DomainError('Credential registry mismatch', 'JWT_STATUS');
+  }
+  if (String(payload.agentId ?? '') !== record.agentId) {
+    throw new DomainError('Credential agentId mismatch', 'JWT_STATUS');
+  }
+  if (String(payload.owner ?? '').toLowerCase() !== record.owner.toLowerCase()) {
+    throw new DomainError('Credential owner mismatch', 'JWT_STATUS');
+  }
+  if (String(payload.status ?? '') !== record.status) {
+    throw new DomainError('Credential status claim mismatch', 'JWT_STATUS');
+  }
+  if (String(payload.status_ref ?? '') !== record.statusRef) {
+    throw new DomainError('Credential status_ref mismatch', 'JWT_STATUS');
   }
 
   return payload as unknown as CredentialClaims;

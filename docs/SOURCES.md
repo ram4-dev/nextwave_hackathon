@@ -15,15 +15,12 @@ Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
 | Identity Registry `getVersion` (read-only live check 2026-08-29) | Sepolia `0x8004A818…BD9e`: proxy code **130 bytes**, `getVersion()` = **`2.0.0`**. Mainnet `0x8004A169…a432`: proxy code **130 bytes**, `getVersion()` = **`2.0.0`**. No chain writes performed. | `SUPPORTED_IDENTITY_REGISTRY_VERSION`; F5 exact-equality readiness gate |
 | Supported Identity Registry version | **`2.0.0`** (exact match required; non-empty alone fails closed) | `verifyRegistryReady`, `assertRegistryReadyForChain`, mainnet promotion |
 | Base Sepolia network/RPC | https://docs.base.org/get-started/connect-to-base | Chain ID `84532`; official public development RPC `https://sepolia.base.org` (rate-limited, not production) |
-| EIP-1193 provider API | https://eips.ethereum.org/EIPS/eip-1193 | Selected injected provider request API, lifecycle events, and error codes |
-| EIP-6963 provider discovery | https://eips.ethereum.org/EIPS/eip-6963 | Multi-wallet discovery, deduplication, and explicit user selection |
-| ERC-4361 Sign-In with Ethereum | https://eips.ethereum.org/EIPS/eip-4361 | Canonical SIWE message fields and verification contract |
-| EIP-3085 add chain | https://eips.ethereum.org/EIPS/eip-3085 | `wallet_addEthereumChain` Base Sepolia metadata |
-| EIP-3326 switch chain | https://eips.ethereum.org/EIPS/eip-3326 | `wallet_switchEthereumChain` Base Sepolia transition |
-| viem Wallet Client | https://viem.sh/docs/clients/wallet | `custom(selectedProvider)`, message signing, and browser-wallet writes |
 | viem `watchContractEvent` | https://viem.sh/docs/contract/watchContractEvent | `registry/events.ts` |
-| viem `simulateContract` | https://viem.sh/docs/contract/simulateContract | Live registration path guidance |
-| viem `writeContract` | https://viem.sh/docs/contract/writeContract | Direct write from the authenticated browser wallet after simulation |
+| CDP email OTP and access-token validation | https://docs.cdp.coinbase.com/wallets/authentication/implementation-guide | Frontend OTP; backend validates opaque access tokens before issuing a KYA session |
+| CDP Smart Accounts | https://docs.cdp.coinbase.com/wallets/using-wallets/smart-accounts | `createOnLogin: "smart"`, Base Sepolia UserOperations, and CDP paymaster sponsorship |
+| CDP non-custodial user wallets | https://docs.cdp.coinbase.com/wallets/non-custodial-wallets/overview | Email-OTP end-user wallet model differs from API-key/server wallets; user retains custody |
+| CDP security boundary | https://docs.cdp.coinbase.com/wallets/security-and-policies/security-overview | Private-key generation/signing stays in the TEE; end-user Temporary Wallet Secrets are device-local |
+| CDP wallet export | https://docs.cdp.coinbase.com/wallets/using-wallets/import-and-export | End-user export is isolated in a secure iframe and host application code does not receive raw key material |
 | Didit create session | https://docs.didit.me/sessions-api/create-session | `kyc/didit.ts` createSession |
 | Didit webhooks | https://docs.didit.me/integration/webhooks | `X-Signature-V2` = HMAC-SHA256(canonical sorted Unicode JSON); `X-Signature` = HMAC over exact rawBody; require `X-Timestamp` ±300s; reject `X-Signature-Simple` and undocumented aliases for KYA |
 | Incode backend integrate | https://developer.incode.com/integrate-by-platform/backend/ | `kyc/incode.ts` session start mapping |
@@ -38,7 +35,11 @@ Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
 | Veriff HMAC auth | https://devdocs.veriff.com/v1/docs/hmac-authentication-and-endpoint-security | Veriff webhook/request HMAC |
 | jose | https://github.com/panva/jose | JWS issue/verify, JWK thumbprints |
 | RFC 7519 (JWT) | https://www.rfc-editor.org/rfc/rfc7519 | Credential claim set |
-| RFC 7638 (JWK thumbprint) | https://www.rfc-editor.org/rfc/rfc7638 | `cnf.jkt` |
+| RFC 8628 (OAuth device authorization grant) | https://www.rfc-editor.org/rfc/rfc8628 | Device enrollment `device_code` / `user_code` / poll interval semantics |
+| RFC 9449 (DPoP) | https://www.rfc-editor.org/rfc/rfc9449 | Agent access JWT sender-constrained proofs (`htm`, `htu`, `ath`, `jti`) |
+| Supabase JS client | https://supabase.com/docs/reference/javascript/introduction | Service-role backend persistence; anon key unused by API |
+| Credential JOSE typ | `KYA-CREDENTIAL+JWT` (identity) vs `KYA-AGENT-ACCESS+JWT` (API access) | Distinct verifiers; identity credential is not an access token |
+
 | Web Crypto API | https://www.w3.org/TR/WebCryptoAPI/ | Local P-256 key generation |
 | Base Sepolia chain ID | 84532 | Config + agentRegistry `eip155:84532:…` |
 | Base Mainnet chain ID | 8453 | Mainnet gate |
@@ -47,7 +48,6 @@ Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
 | Didit status strings | Exact case-sensitive labels from https://docs.didit.me/integration/verification-statuses (2026-08-29): `Not Started`, `In Progress`, `Awaiting User`, `Approved`, `Declined`, `In Review`, `Resubmitted`, `Expired`, `Abandoned`, `Kyc Expired` | `DIDIT_STATUS_MAP` |
 | Veriff status strings | approved / declined / resubmission_requested / … | `VERIFF_STATUS_MAP` |
 | Veriff create-session HMAC | https://devdocs.veriff.com/v1/docs/hmac-authentication-and-endpoint-security (2026-08-29): **POST /v1/sessions is the exception — no X-HMAC-SIGNATURE**; webhooks use `x-hmac-signature` only | `kyc/veriff.ts` |
-| SIWE verify | viem `parseSiweMessage` + `verifySiweMessage` | `src/auth/siwe.ts` |
 | Browser-wallet migration rationale | https://github.com/base/account-sdk/issues/363 | Historical evidence for replacing the former provider-specific Base Sepolia path; `BROWSER_WALLET_MIGRATION_SPEC.md` |
 | PostgreSQL index types and maintenance | https://www.postgresql.org/docs/current/indexes.html | PostgreSQL updates indexes when indexed table rows change; HNSW/GIN/B-tree in `migrations/001_juno_catalog.sql` |
 | ACP API overview | https://developers.openai.com/commerce/specs/api/overview | Feeds/Products/Promotions surfaces; common auth, idempotency, tracing, timestamp and version headers |

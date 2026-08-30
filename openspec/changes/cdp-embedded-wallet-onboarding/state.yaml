@@ -1,0 +1,37 @@
+change: cdp-embedded-wallet-onboarding
+artifact_store: openspec
+delivery_strategy: exception-ok
+status: verified_awaiting_live_smoke
+updated_on: 2026-08-30
+
+phases:
+  init: completed
+  explore: not_required
+  propose: completed
+  spec: completed
+  design: completed
+  tasks: completed
+  apply: completed
+  verify: completed
+  archive: pending
+
+artifacts:
+  proposal: openspec/changes/cdp-embedded-wallet-onboarding/proposal.md
+  specs:
+    - openspec/specs/embedded-wallet-lifecycle/spec.md
+    - openspec/changes/cdp-embedded-wallet-onboarding/specs/human-api-auth/spec.md
+    - openspec/changes/cdp-embedded-wallet-onboarding/specs/erc8004-registration-api/spec.md
+  design: openspec/changes/cdp-embedded-wallet-onboarding/design.md
+  tasks: openspec/changes/cdp-embedded-wallet-onboarding/tasks.md
+  apply_progress: openspec/changes/cdp-embedded-wallet-onboarding/apply-progress.md
+  verify_report: openspec/changes/cdp-embedded-wallet-onboarding/verify-report.md
+
+approval:
+  implementation_authorized: true
+  note: User approved the specs and authorized implementation on 2026-08-30.
+
+workload:
+  estimated_changed_lines: 650-900
+  risk: high
+  chain_strategy: size-exception
+  size_exception_accepted: true

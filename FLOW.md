@@ -1,13 +1,41 @@
 # FLOW — Autenticación KYA y descubrimiento de catálogo de merchants
 
+> **Current production auth/wallet boundary (2026-08-30):** CDP email OTP
+> provisions `createOnLogin: "smart"`. KYA validates the opaque CDP token on
+> the server, binds only that Smart Account to the pseudonymous Principal, and
+> issues a 15-minute KYA session. ERC-8004 is a bounded Base Sepolia (84532)
+> CDP Smart Account UserOperation with `useCdpPaymaster: true`. No injected
+> wallet, paymaster URL, or wallet private key is a production input. CDP email
+> OTP is the production authentication input; its codes and tokens are never
+> persisted or logged by KYA.
+> CDP sources are recorded in `docs/SOURCES.md`. The separate
+> `docs/BROWSER_WALLET_MIGRATION_SPEC.md` is historical only.
+
+> **API-first contract (2026-08-30):** External frontends and local agents
+> use versioned `/v1` routes. Device pairing uses hashed `device_code`/`user_code`
+> (RFC 8628). Agent API access requires `Authorization: DPoP` plus an RFC 9449
+> proof; the KYA identity credential is delivered at most once and is never an
+> access token. Supabase (service role) is the live shared persistence/replay
+> authority; JSON is local-demo only and never a silent fallback.
+> Human pairing has one HTTP authority: `POST /v1/device-enrollments/claim`
+> consumes the hashed one-time `user_code`; no `agentUuid`-only attach endpoint
+> may bind a Principal.
+
+> **Custody constraint:** This is a CDP end-user wallet, not an API-key/server
+> wallet. The embedded EOA owns the Smart Account; KYA never receives raw key
+> material and must not pre-generate a user wallet before OTP succeeds. A user
+> can export only through CDP's secure iframe, which remains isolated from KYA
+> application JavaScript.
+
 ## Decisión ejecutiva
 
 **KYC es solo para personas** y, en condiciones normales, **se hace una sola vez**. La persona autoriza uno o más agentes compradores locales que corren en su PC. La plataforma KYA vincula un **Principal ID** seudónimo verificado a un **Agent ID ERC-8004** y a la **clave pública local** del agente.
 
-La única conexión de wallet del MVP live es **`BrowserWalletConnector`**: descubre
-providers inyectados, autentica con SIWE y envía directamente
-`register(agentURI)` desde la misma dirección verificada. No hay abstracción de
-cuenta ni sponsorship de gas; el usuario paga gas de Base Sepolia.
+El MVP live usa exclusivamente CDP email OTP. Tras OTP, CDP crea o recupera la
+embedded EOA y su Smart Account; KYA vincula únicamente la Smart Account al
+Principal. La persona aprueba una única UserOperation ERC-4337 para
+`register(agentURI)` en Base Sepolia. La sponsorship se gobierna en CDP Portal;
+KYA no firma, no custodia claves y no expone una URL de paymaster.
 
 La búsqueda de catálogo queda separada de identidad y auth en este slice:
 un agente consumidor consulta, en lenguaje natural, un catálogo de comercios
@@ -43,16 +71,15 @@ sequenceDiagram
   participant A as Agente local
   participant K as Plataforma KYA
   participant KYC as Proveedor KYC
-  participant BW as Browser wallet<br/>(EIP-1193)
+  participant CDP as CDP email OTP<br/>Smart Account
   participant IR as ERC-8004<br/>Identity Registry
 
   A->>A: Genera clave P-256<br/>(HW keystore o fallback cifrado)
   A->>K: Solicita enrollment (thumbprint público)
   K->>K: Crea código de enrollment de dispositivo
-  U->>BW: Selecciona wallet y conecta cuenta
-  BW->>BW: Cambia/agrega Base Sepolia (84532)
-  U->>BW: Firma mensaje SIWE canónico
-  BW->>K: SIWE message + signature
+  U->>CDP: Ingresa email y OTP
+  CDP->>CDP: Provisiona Smart Account (`createOnLogin: "smart"`)
+  CDP->>K: Access token opaco (exchange servidor)
   alt Sin Principal verificado o KYC expirado
     U->>KYC: Completa KYC hospedado
     KYC->>K: Webhook firmado (estado verified)
@@ -60,8 +87,8 @@ sequenceDiagram
   K->>K: Crea o reutiliza Principal ID seudónimo
   K->>U: Muestra fingerprint de la clave del agente
   U->>K: Aprueba fingerprint
-  U->>BW: Confirma transacción directa
-  BW->>IR: register(agentURI)<br/>(msg.sender = browser wallet)
+  U->>CDP: Confirma UserOperation patrocinada
+  CDP->>IR: register(agentURI)<br/>(sender = Smart Account)
   IR-->>K: Evento Registered(agentId, ...)
   K->>K: watchContractEvent → Registered
   K->>K: Construye referencia completa<br/>agentRegistry + agentId
@@ -231,7 +258,7 @@ Detalle: [`docs/ACP_MERCHANT_CATALOG_INGESTION.md`](./docs/ACP_MERCHANT_CATALOG_
 
 | Actor | Responsabilidad | No hace |
 | --- | --- | --- |
-| **Usuario** | Seleccionar browser wallet, firmar SIWE, KYC (si falta o expiró), aprobar fingerprint/binding y confirmar la transacción | Operar la clave privada del agente |
+| **Usuario** | Completar CDP email OTP, KYC (si falta o expiró), aprobar fingerprint/binding y confirmar la UserOperation | Operar la clave privada del agente |
 | **Agente local** | Generar/usar clave P-256; firmar challenges; guardar identidad pública | Completar KYC; poseer el NFT Agent ID; exponer endpoint público |
 | **Plataforma KYA** | Orquestar enrollment, adaptar KYC, hospedar `agentURI`, emitir/revocar JWS KYA, indexar eventos | Ver/autorizar al agente en lugar del usuario; llamar `register` desde su wallet; desplegar registry |
 | **Proveedor KYC** | Verificar **solo a la persona**; webhook firmado con estado normalizado | Ver, registrar o autorizar al agente |
@@ -262,11 +289,11 @@ Detalle: [`docs/ACP_MERCHANT_CATALOG_INGESTION.md`](./docs/ACP_MERCHANT_CATALOG_
 
 1. Agente genera clave P-256: **no exportable** si el keystore hardware del SO lo soporta; si no, **fallback** en keystore cifrado del SO. La privada **nunca sale del dispositivo**.
 2. Plataforma crea código de enrollment de dispositivo.
-3. Usuario selecciona una browser wallet, cambia/agrega Base Sepolia y firma SIWE.
+3. Usuario completa CDP email OTP; CDP crea o recupera su Smart Account sin extensión, selector de wallet ni cambio manual de red.
 4. Si no hay Principal verificado activo o el KYC expiró: KYC hospedado → webhook → `verified`.
 5. Plataforma crea o reutiliza **Principal ID** seudónimo.
 6. Usuario ve y aprueba el fingerprint de la clave del agente.
-7. La browser wallet autenticada simula y ejecuta `register(agentURI)`; el usuario paga gas de Base Sepolia.
+7. La CDP Smart Account autenticada aprueba y ejecuta la UserOperation `register(agentURI)` con sponsorship configurada en CDP Portal.
 8. Plataforma indexa `Registered` (`viem` `watchContractEvent`) y arma `agentRegistry` + `agentId`.
 9. Plataforma emite credencial KYA JWS/JWT de corta vida (ver §6).
 10. Agente guarda solo material público; la privada no se transmite nunca.
@@ -290,9 +317,9 @@ Detalle: [`docs/ACP_MERCHANT_CATALOG_INGESTION.md`](./docs/ACP_MERCHANT_CATALOG_
 | ABI oficial | [erc-8004/erc-8004-contracts](https://github.com/erc-8004/erc-8004-contracts) | Fuente de ABI |
 | EIP | [EIP-8004](https://eips.ethereum.org/EIPS/eip-8004) | Especificación |
 | Cliente EVM TS | **`viem`** | `simulateContract`, `writeContract`, `readContract`, decode, EIP-712, **`watchContractEvent`** (`Registered`, `Transfer`) |
-| Wallet live | **`BrowserWalletConnector`** | EIP-6963 para discovery + EIP-1193 sobre el provider elegido |
-| Login humano | **SIWE / ERC-4361** | La misma dirección autenticada queda ligada al Principal y al registro |
-| Gas | ETH de Base Sepolia del usuario | La browser wallet (no el relayer) es `owner` del Agent ID |
+| Wallet live | **CDP embedded wallet + Smart Account** | Email OTP, `createOnLogin: "smart"`, and CDP UserOperation approval |
+| Login humano | **CDP email OTP** | La misma dirección autenticada queda ligada al Principal y al registro |
+| Gas | Sponsorship de CDP Portal para la llamada permitida | La Smart Account no tiene contingencia de saldo propio; sigue siendo `owner` del Agent ID |
 | RPC | Provider Base de producción | RPC público solo para desarrollo local |
 | `agentURI` | HTTPS versionado hospedado por KYA | IPFS = portabilidad posterior |
 | Firmas / thumbprints | **`jose`** | ES256/JWS; thumbprint JWK **RFC 7638** (`cnf.jkt`) |
@@ -304,20 +331,20 @@ Detalle: [`docs/ACP_MERCHANT_CATALOG_INGESTION.md`](./docs/ACP_MERCHANT_CATALOG_
 
 `register` mintea la propiedad a `msg.sender`. Si el relayer llama desde su wallet, `ownerOf(agentId)` apuntaría a la plataforma.
 
-La transacción directa debe enviarse desde la **browser wallet autenticada de la
+La UserOperation debe enviarse desde la **CDP Smart Account autenticada de la
 persona**, para que `ownerOf(agentId)` resuelva a la misma dirección que firmó
-SIWE y completó KYC.
+CDP email OTP y completó KYC.
 
 | Quién ejecuta | `ownerOf` | ¿Válido? |
 | --- | --- | --- |
-| Browser wallet autenticada | Cuenta de la persona | Sí |
+| Smart Account autenticada | Cuenta de la persona | Sí |
 | Wallet/relayer de KYA | Wallet de KYA | No |
 
 ### Operaciones on-chain (Identity Registry)
 
 | Operación | Uso en KYA |
 | --- | --- |
-| `register(agentURI)` | Alta del Agent ID; ownership = browser wallet autenticada |
+| `register(agentURI)` | Alta del Agent ID; ownership = CDP Smart Account autenticada |
 | `ownerOf(agentId)` | Comprobar ownership actual |
 | `tokenURI` / lectura de URI | Resolver metadatos / `agentURI` |
 | `setAgentURI` | Actualizar URI versionada (sin PII) |
@@ -362,7 +389,7 @@ Perfil externo **W3C VC** o **SD-JWT VC** puede añadirse después **sin cambiar
 | `agent_uuid` | UUID interno de plataforma |
 | `agentRegistry` | `eip155:84532:<identityRegistryAddress>` (MVP) o `eip155:8453:...` (prod) |
 | `agentId` | ID on-chain (ERC-721 token id) |
-| `owner` | Browser wallet dueña y autenticada por SIWE |
+| `owner` | Smart Account de CDP vinculada al Principal tras email OTP |
 | `agentURI` | URI HTTPS del archivo de registro hospedado por KYA |
 | `local_key_thumbprint` / `cnf.jkt` | Thumbprint JWK RFC 7638 |
 | `principal_id` | Seudónimo de la persona verificada |
@@ -393,7 +420,7 @@ Challenge firmado por la clave operativa local (ES256 vía `jose`):
 
 | Tipo de clave | Quién | Vida útil |
 | --- | --- | --- |
-| Browser wallet / autorización SIWE | Humano | Sesión acotada; enrollment y actos sensibles |
+| CDP email OTP / Smart Account | Humano | Sesión acotada; enrollment y actos sensibles |
 | Clave operativa del agente | Agente local | Corta / rotable; challenges autónomos |
 
 Credencial **copiada es inútil** sin la clave privada local.
@@ -432,9 +459,9 @@ Credencial **copiada es inútil** sin la clave privada local.
 
 | Fase | Entrega |
 | --- | --- |
-| **F0** | Adapter KYC (Didit) + estados normalizados + browser wallet / SIWE |
+| **F0** | Adapter KYC (Didit) + estados normalizados + CDP Smart Account / CDP email OTP |
 | **F1** | Enrollment dispositivo + fingerprint + Principal ID (KYC solo si falta/expiró) |
-| **F2** | `BrowserWalletConnector` + `viem` + simulación/escritura directa de `register` contra registry curated (Sepolia) |
+| **F2** | `CDP Smart Account` + `viem` + una UserOperation patrocinada y aprobada por el usuario para `register` contra registry curated (Sepolia); no hay transacción EOA alternativa ni contingencia de saldo propio |
 | **F3** | `watchContractEvent` (`Registered`/`Transfer`) + JWS KYA (`jose`, `cnf.jkt`) + auth challenge |
 | **F4** | Rotación/revocación/device loss + Incode (CO) + Veriff fallback |
 | **F5** | Gate dirección/versión → Base Mainnet (sigue sin deploy propio) |
@@ -460,8 +487,8 @@ Spec técnica: [`docs/JUNO_CATALOG_SEARCH_SPEC.md`](./docs/JUNO_CATALOG_SEARCH_S
 - [ ] P-256: HW no exportable si el SO lo soporta; si no, keystore cifrado; privada nunca sale del dispositivo.
 - [ ] Usuario aprueba fingerprint antes del binding.
 - [ ] MVP consume Identity Registry curated + ABI oficial; sin deploy propio; Hardhat/Foundry fuera del runtime.
-- [ ] `register` vía la misma browser wallet que firmó SIWE; simulación previa y gas pagado por el usuario.
-- [ ] `ownerOf(agentId)` = browser wallet autenticada de la persona, no la plataforma.
+- [ ] `register` vía la misma CDP Smart Account que completó CDP email OTP; UserOperation exacta y sponsorship gobernada por CDP Portal, sin transacción EOA alternativa ni contingencia de saldo propio.
+- [ ] `ownerOf(agentId)` = CDP Smart Account autenticada de la persona, no la plataforma.
 - [ ] Referencia canónica = `agentRegistry` + `agentId`.
 - [ ] Credencial MVP = JWS/JWT corta vida con `cnf.jkt`, Principal, ref completa, `iss`/`aud`/`iat`/`exp`, id y status ref; sin PII.
 - [ ] `agentURI` hospedado por KYA; sin Principal ID, KYC, documentos ni biometría.
@@ -505,7 +532,7 @@ Spec técnica: [`docs/JUNO_CATALOG_SEARCH_SPEC.md`](./docs/JUNO_CATALOG_SEARCH_S
 
 1. KYC normalmente una vez; un Principal autoriza muchos agentes.
 2. Credencial copiada ≠ acceso: falta la clave local.
-3. Separar autorización SIWE de la persona de las claves operativas del agente.
+3. Separar autorización CDP email OTP de la persona de las claves operativas del agente.
 4. Transfer ERC-721 → suspender binding hasta Principal verificado activo + aprobación explícita; KYC solo si la persona no está verificada o expiró.
 5. Nunca PII ni evidencia KYC on-chain, en `agentURI` ni en el JWS.
 6. Cambio de PC → nueva clave + revocación; KYC solo si política o expiración.
@@ -523,8 +550,8 @@ Spec técnica: [`docs/JUNO_CATALOG_SEARCH_SPEC.md`](./docs/JUNO_CATALOG_SEARCH_S
 | IdentityRegistry Base Sepolia (84532) | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
 | IdentityRegistry Base Mainnet (8453) | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | Cliente EVM | `viem` (`watchContractEvent`, simulate/write/read, EIP-712) |
-| Browser wallet | `BrowserWalletConnector` (`viem` custom transport, EIP-1193/EIP-6963) |
-| Login humano | SIWE / ERC-4361 |
+| Wallet humana | CDP embedded wallet + Smart Account (`createOnLogin: "smart"`) |
+| Login humano | CDP email OTP |
 | Firmas / JWS / thumbprints | `jose` (ES256, JWS/JWT, RFC 7638 `jkt`) |
 | KYC MVP | Didit |
 | KYC prod Colombia | Incode |

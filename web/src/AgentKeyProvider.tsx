@@ -17,6 +17,7 @@ import {
   type ReactNode,
   type MutableRefObject,
 } from 'react';
+import { assertPublicEcP256Jwk } from './agent/dpopClient.js';
 
 export type KeystoreProviderKind = 'os_hardware' | 'encrypted_os_keystore';
 
@@ -90,8 +91,9 @@ export async function generateBrowserAgentKey(): Promise<AgentKeyHandle> {
       keystoreProvider = 'os_hardware';
       nonExtractable = true;
     }
-    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
-    delete (publicJwk as { d?: string }).d;
+    const publicJwk = await assertPublicEcP256Jwk(
+      await crypto.subtle.exportKey('jwk', pair.publicKey),
+    );
     return {
       privateKey: pair.privateKey,
       publicKey: pair.publicKey,
@@ -105,8 +107,9 @@ export async function generateBrowserAgentKey(): Promise<AgentKeyHandle> {
       true,
       ['sign', 'verify'],
     );
-    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
-    delete (publicJwk as { d?: string }).d;
+    const publicJwk = await assertPublicEcP256Jwk(
+      await crypto.subtle.exportKey('jwk', pair.publicKey),
+    );
     return {
       privateKey: pair.privateKey,
       publicKey: pair.publicKey,

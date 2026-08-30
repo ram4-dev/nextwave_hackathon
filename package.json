@@ -2,7 +2,7 @@
   "name": "kya-local-agent-auth",
   "version": "0.1.0",
   "private": true,
-  "description": "KYA — Know Your Agent local-agent authentication on Base (ERC-8004)",
+  "description": "KYA \u2014 Know Your Agent local-agent authentication on Base (ERC-8004)",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
@@ -24,14 +24,20 @@
     "catalog:revoke": "tsx scripts/revoke-merchant-api-key.ts",
     "catalog:rotate": "tsx scripts/rotate-merchant-api-key.ts",
     "catalog:worker": "tsx scripts/reindex-catalog-worker.ts",
-    "catalog:harness": "tsx scripts/harness-acp-catalog.ts"
+    "catalog:harness": "tsx scripts/harness-acp-catalog.ts",
+    "kya:store:migrate": "tsx scripts/kya-store-migrate.ts"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@coinbase/cdp-core": "^0.0.123",
+    "@coinbase/cdp-hooks": "^0.0.123",
+    "@coinbase/cdp-react": "^0.0.123",
+    "@coinbase/cdp-sdk": "^1.55.0",
     "@hono/node-server": "^1.14.4",
     "@huggingface/transformers": "^3.7.2",
+    "@supabase/supabase-js": "^2.112.4",
     "hono": "^4.8.5",
     "jose": "^6.0.11",
     "pg": "^8.16.3",
@@ -40,6 +46,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "^22.16.5",
     "@types/pg": "^8.15.5",
     "@types/react": "^19.1.8",
@@ -47,6 +55,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^9.31.0",
     "globals": "^16.3.0",
+    "jsdom": "^30.0.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tsx": "^4.20.3",

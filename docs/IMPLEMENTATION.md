@@ -1,34 +1,45 @@
 # KYA Implementation
 
+## CDP user-wallet custody boundary
+
+KYA uses CDP **end-user authentication**, not an API-key/server wallet: email
+OTP plus `createOnLogin: "smart"` creates an embedded EOA and its Smart Account
+for the person after successful login. The Smart Account is the only address
+that KYA binds to the pseudonymous Principal and the only sender accepted for
+ERC-8004 registration. The app and KYA backend never receive its raw private
+key, seed phrase, Temporary Wallet Secret, or Wallet Secret.
+
+CDP performs key generation and signing within its TEE. A user may export its
+own wallet only through CDP's isolated secure iframe; host-app JavaScript does
+not receive the raw key. API-key/server wallets, imported application keys, and
+backend pre-login end-user generation are deliberately rejected for this flow:
+they would change the owner/custody model before EWL-001 authentication.
+
+The backend's CDP API credentials validate the opaque end-user access token;
+they do not authorize KYA to sign the user's UserOperation. Sponsorship uses
+CDP Portal policy and `useCdpPaymaster: true`, never a Vite paymaster URL.
+
 ## Architecture
 
 ```
-Browser wizard (Vite/React)
-  ├─ AgentKeyProvider (in-memory CryptoKey ref)
-  └─ BrowserWalletConnector (EIP-6963 discovery + selected EIP-1193 provider)
+Browser wizard (Vite/React) — reference API client
+  ├─ AgentKeyProvider + IndexedDB CryptoKey handle (never localStorage private JWK)
+  └─ CDP email OTP → exchange → Principal session (`KYA-HUMAN-SESSION+JWT`)
         │
         ▼
 Hono API (:8787)
-  ├─ auth (SIWE nonce + viem verifySiweMessage; demo bypass labeled)
-  ├─ enrollment / fingerprint / rotate / revoke / rebind / claim-credential
-  ├─ public /v1/resolve (no PII)
-  ├─ KYC adapters (demo only when KYA_MODE=demo | didit | incode | veriff)
-  ├─ agentURI host (ERC-8004 registration-v1, no PII)
-  ├─ credential issue/verify + JWKS
-  ├─ challenge-response (ownerOf fail-closed in live)
-  └─ public POST /v1/catalog/search (no auth/KYC; optional PostgreSQL catalog)
+  ├─ POST /v1/auth/cdp/exchange
+  ├─ POST /v1/device-enrollments (+ claim / token poll; hashed codes; no attach bypass)
+  ├─ KYC sessions/status; GET /v1/kyc/callback 303; signed webhook authority
+  ├─ CDP registration-intent / submissions / resolve + viem watcher
+  ├─ challenge → ≤10m DPoP-bound access JWT (typ KYA-AGENT-ACCESS+JWT)
+  ├─ requireAgentAuth + GET /v1/agent/me
+  ├─ GET /health (liveness) · GET /ready (deps/schema)
+  └─ catalog search / ACP (unchanged Juno slice)
         │
         ▼
-Domain + JSON repository (.kya-data)
-  Principal · Enrollment · Credential · Nonce · KYC session · Event cursor
-Catalog PostgreSQL/pgvector (separate from KyaStore)
-  versions · merchants · products · search projections + HNSW/GIN
-        │
-        ▼
-Base (live only)
-  Identity Registry curated · simulateContract + writeContract from browser wallet
-  watchContractEvent(Registered, Transfer): always Sepolia; Mainnet only when
-  MAINNET_PROMOTION_ENABLED + MAINNET_REGISTRY_VERIFIED and getVersion === 2.0.0
+Persistence: InMemory (tests) · JSON (local demo) · Supabase service-role (live shared)
+  Never silently fall back from Supabase to JSON
 ```
 
 ### Domain states
@@ -98,9 +109,9 @@ mutations per merchant. Manual key revoke/rotate: `catalog:revoke` and
 
 | Phase | Status | Evidence |
 | --- | --- | --- |
-| F0 KYC + SIWE | Code-complete + demo-verified; live SIWE wired, live-not-executed | `src/kyc/*`, `src/auth/siwe.ts`, wizard |
+| F0 KYC + CDP OTP | Code-complete + demo-verified; live token validation wired, live-not-executed | `src/kyc/*`, `src/auth/cdp.ts`, `src/auth/session.ts`, wizard |
 | F1 Enrollment + Principal | Code-complete + demo-verified | `src/services/ceremony.ts` |
-| F2 Registry register path | Code-complete (demo simulation / live intent validation + simulate-before-write); live-not-executed | `src/registry/identity.ts`, `web/src/browserWalletConnector.ts` |
+| F2 Registry register path | Code-complete (demo simulation / live Smart Account intent + UserOperation evidence); live-not-executed | `src/registry/identity.ts`, `web/src/CdpAuth.tsx`, wizard |
 | F3 Events + JWS + challenge | Code-complete + demo-verified; live watcher wired, live-not-executed | `src/registry/events.ts`, `src/credentials/jws.ts`, `server/index.ts` |
 | F4 Rotate/revoke + Incode/Veriff | Code-complete + demo-verified (rotation/rebind tests); live adapters live-not-executed | ceremony + `src/kyc/incode.ts`, `veriff.ts` |
 | F5 Mainnet gate | Code-complete (flags + exact `getVersion === 2.0.0`; no hardcoded trust) | `SUPPORTED_IDENTITY_REGISTRY_VERSION`, `selectLiveWatcherChains` |
@@ -109,16 +120,19 @@ mutations per merchant. Manual key revoke/rotate: `catalog:revoke` and
 
 | Threat | Mitigation |
 | --- | --- |
-| Platform owns Agent NFT | Authenticated browser wallet submits `register`; ownership checks via `ownerOf` |
+| Platform owns Agent NFT | CDP Smart Account submits `register`; exact UserOperation/receipt/event/`ownerOf` checks gate binding |
 | Copied JWT abuse | Bound to local key via `cnf.jkt`; challenges require private key |
+| Token-class confusion | Human session, identity credential, and agent access JWT use distinct protected `typ`, audience, and verifier contracts |
+| Pairing by guessed agent UUID | Only `device-enrollments/claim` may bind a Principal and it must consume the hashed one-time `user_code` |
+| Invalid challenge triggers chain RPC | Nonce bindings and P-256 signature are validated before `ownerOf` |
+| Challenge burned without token | Nonce consumption and access-token metadata append share one repository lock/CAS |
 | KYC PII leakage | Store session/provider refs + assurance only; strip from agentURI/JWS |
 | Webhook forgery / replay | Provider-specific auth + eventId idempotency |
 | Demo KYC in live | Adapter/routes forbid `demo` when `KYA_MODE=live` |
-| Wrong injected provider | EIP-6963 explicit selection; one provider object reused for connect/sign/simulate/write |
-| SIWE presentation | `parseSiweMessage` + `verifySiweMessage`; exact domain/URI/address/Base Sepolia/nonce/time fields; consume-after-valid |
-| Registration tampering | Compare owner, chain, curated registry, zero value, and independently encoded calldata before simulation/write |
-| Wallet lifecycle change | Account/network/disconnect events invalidate the session or prepared write and require reauthentication |
-| Watcher confirmations | Pending queue + flush on callbacks/timer; `stop` clears pending |
+| OTP/token abuse | CDP validates OTP; KYA validates opaque access token server-side, stores no email/OTP/token, and issues a short session |
+| Registration tampering | Require CDP status `complete`, matching non-reverted receipt, exact transaction, curated registry, intent, event, and `ownerOf` |
+| Wallet lifecycle change | CDP reauthentication resolves the same user/Smart Account binding or fails closed |
+| Watcher confirmations | Pending queue + flush on callbacks/timer; unresolved matching `Registered` evidence is durably retried after restart and bounded by age/count |
 | JWT alg confusion | ES256 allowlist only; reject `none` |
 | Mainnet wrong address | Promotion flags **and** live code/`getVersion` (no hardcoded true) |
 | Platform signing private key | Demo: in-memory ephemeral. Live: fail-closed without injected JWK |
@@ -129,11 +143,11 @@ mutations per merchant. Manual key revoke/rotate: `catalog:revoke` and
 1. Copy `.env.example` → `.env` (no placeholder secrets in code defaults).
 2. Set `KYA_MODE=live`.
 3. Set `BASE_SEPOLIA_RPC_URL`. Local testing may use the official rate-limited `https://sepolia.base.org`; production must use a dedicated Base RPC.
-4. Set `SIWE_DOMAIN` and `SIWE_URI` to the exact public browser origin and `/app/` URI.
+4. Set `FRONTEND_ORIGIN` to the exact public browser origin and configure that domain in CDP Portal.
 5. Set Didit `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID`, `DIDIT_WEBHOOK_SECRET`.
 6. Point Didit webhooks to `POST /v1/kyc/webhooks/didit`.
 7. Set exactly one signing source: Vault-injected `KYA_SIGNING_PRIVATE_JWK`, or `KYA_SIGNING_KEY_FILE` pointing to a secret-mounted ES256 private JWK. Never commit the key.
-8. Fund the browser wallet with Base Sepolia ETH for registration gas.
+8. Configure CDP Portal sponsorship for the registry call; the browser never receives a paymaster URL.
 9. For Incode/Veriff, set their env vars and use `?provider=incode|veriff` (never `demo`).
 10. Mainnet: verify curated address, confirm `getVersion` + bytecode, then set `MAINNET_REGISTRY_VERIFIED=true` and `MAINNET_PROMOTION_ENABLED=true`.
 
@@ -143,8 +157,8 @@ mutations per merchant. Manual key revoke/rotate: `catalog:revoke` and
 
 `npm run dev` + `npm run dev:web` → http://localhost:5173
 
-Demo steps are labeled. Live mode wires `BrowserWalletConnector` (SIWE + direct
-registry transaction), requires Base Sepolia, and never calls `confirm-demo`.
+Demo steps are labeled. Live mode uses CDP email OTP and one sponsored Base
+Sepolia Smart Account UserOperation, and never calls `confirm-demo`.
 
 ## Related docs
 
