@@ -32,7 +32,7 @@
       "tenantId": "tenant_demo",
       "receivedAt": "2030-01-01T00:00:00Z",
       "promptHash": "sha256-base64url-of-user-prompt-kept-off-chain",
-      "promptStorageRef": "encrypted-offchain://requests/request_demo_001",
+      "encryptedPromptRef": "encrypted-offchain://requests/request_demo_001",
       "status": "checkout_created"
     }
   ],

@@ -71,30 +71,30 @@ export interface UserMandateSigner {
 /** Alias for the future Credential Provider integration. No production implementation exists in phase 1. */
 export type CredentialProviderAdapter = UserMandateSigner;
 
+export type StoredCheckoutDraft = {
+  transactionId: string;
+  checkoutHash: string;
+  /** SHA-256 base64url of the exact canonical checkout draft payload that was issued. */
+  payloadHash: string;
+};
+
+export type StoredPaymentDraft = {
+  transactionId: string;
+  checkoutHash: string;
+  checkoutMandateDraftId: string;
+  /** SHA-256 base64url of the exact canonical payment draft payload that was issued. */
+  payloadHash: string;
+};
+
 export interface MandateReplayStore {
   consumeNonce(transactionId: string, nonce: string): Promise<void>;
-  rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string): Promise<void>;
-  getCheckoutDraft(id: string): Promise<{ transactionId: string; checkoutHash: string } | undefined>;
-  rememberPaymentDraft?(id: string, record: {
-    transactionId: string;
-    checkoutHash: string;
-    checkoutMandateDraftId: string;
-    payeeId: string;
-    amountMinor: number;
-    currency: string;
-    instrumentId: string;
-    sub: string;
-    aud: string;
-  }): Promise<void>;
-  getPaymentDraft?(id: string): Promise<{
-    transactionId: string;
-    checkoutHash: string;
-    checkoutMandateDraftId: string;
-    payeeId: string;
-    amountMinor: number;
-    currency: string;
-    instrumentId: string;
-    sub: string;
-    aud: string;
-  } | undefined>;
+  rememberCheckoutDraft(
+    id: string,
+    transactionId: string,
+    checkoutHash: string,
+    payloadHash: string,
+  ): Promise<void>;
+  getCheckoutDraft(id: string): Promise<StoredCheckoutDraft | undefined>;
+  rememberPaymentDraft(id: string, record: StoredPaymentDraft): Promise<void>;
+  getPaymentDraft(id: string): Promise<StoredPaymentDraft | undefined>;
 }

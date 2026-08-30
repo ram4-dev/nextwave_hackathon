@@ -2,24 +2,12 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DomainError } from '../domain/state-machine.js';
-import type { MandateReplayStore } from './types.js';
-
-type PaymentDraftRecord = {
-  transactionId: string;
-  checkoutHash: string;
-  checkoutMandateDraftId: string;
-  payeeId: string;
-  amountMinor: number;
-  currency: string;
-  instrumentId: string;
-  sub: string;
-  aud: string;
-};
+import type { MandateReplayStore, StoredCheckoutDraft, StoredPaymentDraft } from './types.js';
 
 type ReplayState = {
   nonces: Record<string, true>;
-  checkoutDrafts: Record<string, { transactionId: string; checkoutHash: string }>;
-  paymentDrafts: Record<string, PaymentDraftRecord>;
+  checkoutDrafts: Record<string, StoredCheckoutDraft>;
+  paymentDrafts: Record<string, StoredPaymentDraft>;
 };
 
 const emptyState = (): ReplayState => ({ nonces: {}, checkoutDrafts: {}, paymentDrafts: {} });
@@ -33,15 +21,15 @@ export class InMemoryMandateReplayStore implements MandateReplayStore {
     this.state.nonces[key] = true;
   }
 
-  async rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string): Promise<void> {
-    this.state.checkoutDrafts[id] = { transactionId, checkoutHash };
+  async rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string, payloadHash: string): Promise<void> {
+    this.state.checkoutDrafts[id] = { transactionId, checkoutHash, payloadHash };
   }
 
   async getCheckoutDraft(id: string) {
-    return this.state.checkoutDrafts[id];
+    return this.state.checkoutDrafts[id] ? structuredClone(this.state.checkoutDrafts[id]) : undefined;
   }
 
-  async rememberPaymentDraft(id: string, record: PaymentDraftRecord): Promise<void> {
+  async rememberPaymentDraft(id: string, record: StoredPaymentDraft): Promise<void> {
     this.state.paymentDrafts[id] = structuredClone(record);
   }
 
@@ -68,6 +56,7 @@ export class JsonFileMandateReplayStore implements MandateReplayStore {
     const run = this.lock.then(async () => {
       const state = await this.read();
       if (!state.paymentDrafts) state.paymentDrafts = {};
+      if (!state.checkoutDrafts) state.checkoutDrafts = {};
       const result = fn(state);
       await mkdir(path.dirname(this.filePath), { recursive: true });
       const temp = `${this.filePath}.${randomUUID()}.tmp`;
@@ -87,19 +76,21 @@ export class JsonFileMandateReplayStore implements MandateReplayStore {
     });
   }
 
-  async rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string): Promise<void> {
-    await this.mutate((state) => { state.checkoutDrafts[id] = { transactionId, checkoutHash }; });
+  async rememberCheckoutDraft(id: string, transactionId: string, checkoutHash: string, payloadHash: string): Promise<void> {
+    await this.mutate((state) => { state.checkoutDrafts[id] = { transactionId, checkoutHash, payloadHash }; });
   }
 
   async getCheckoutDraft(id: string) {
-    return (await this.read()).checkoutDrafts[id];
+    const record = (await this.read()).checkoutDrafts[id];
+    return record ? structuredClone(record) : undefined;
   }
 
-  async rememberPaymentDraft(id: string, record: PaymentDraftRecord): Promise<void> {
+  async rememberPaymentDraft(id: string, record: StoredPaymentDraft): Promise<void> {
     await this.mutate((state) => { state.paymentDrafts[id] = structuredClone(record); });
   }
 
   async getPaymentDraft(id: string) {
-    return (await this.read()).paymentDrafts?.[id];
+    const record = (await this.read()).paymentDrafts?.[id];
+    return record ? structuredClone(record) : undefined;
   }
 }

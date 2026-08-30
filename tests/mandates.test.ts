@@ -115,12 +115,26 @@ describe('AP2 mandate drafts', () => {
       userReference: 'user_001', nonce: 'nonce_payment', issuedAt, expiresAt,
     });
 
-    const cases: Array<{ label: string; draft: typeof paymentDraft.unsignedMandatePayload }> = [
+    const cases: Array<{ label: string; draft: typeof paymentDraft.unsignedMandatePayload | typeof checkoutDraft.unsignedMandatePayload }> = [
       {
         label: 'payee',
         draft: {
           ...paymentDraft.unsignedMandatePayload,
           payee: { id: 'other', name: 'Other', website: 'https://other.example' },
+        },
+      },
+      {
+        label: 'payee_name',
+        draft: {
+          ...paymentDraft.unsignedMandatePayload,
+          payee: { ...paymentDraft.unsignedMandatePayload.payee, name: 'Renamed' },
+        },
+      },
+      {
+        label: 'payee_website',
+        draft: {
+          ...paymentDraft.unsignedMandatePayload,
+          payee: { ...paymentDraft.unsignedMandatePayload.payee, website: 'https://evil.example' },
         },
       },
       {
@@ -143,6 +157,20 @@ describe('AP2 mandate drafts', () => {
         },
       },
       {
+        label: 'instrument_type',
+        draft: {
+          ...paymentDraft.unsignedMandatePayload,
+          payment_instrument: { ...paymentDraft.unsignedMandatePayload.payment_instrument, type: 'bank' },
+        },
+      },
+      {
+        label: 'instrument_masked',
+        draft: {
+          ...paymentDraft.unsignedMandatePayload,
+          payment_instrument: { ...paymentDraft.unsignedMandatePayload.payment_instrument, description_masked: 'Card •••• 0000' },
+        },
+      },
+      {
         label: 'amount',
         draft: {
           ...paymentDraft.unsignedMandatePayload,
@@ -155,6 +183,38 @@ describe('AP2 mandate drafts', () => {
           ...paymentDraft.unsignedMandatePayload,
           payment_amount: { amount_minor: 3150, currency: 'EUR' },
         },
+      },
+      {
+        label: 'payment_iat',
+        draft: { ...paymentDraft.unsignedMandatePayload, iat: paymentDraft.unsignedMandatePayload.iat + 1 },
+      },
+      {
+        label: 'payment_exp',
+        draft: { ...paymentDraft.unsignedMandatePayload, exp: paymentDraft.unsignedMandatePayload.exp + 1 },
+      },
+      {
+        label: 'payment_nonce',
+        draft: { ...paymentDraft.unsignedMandatePayload, nonce: 'tampered_nonce' },
+      },
+      {
+        label: 'checkout_sub',
+        draft: { ...checkoutDraft.unsignedMandatePayload, sub: 'other_user' },
+      },
+      {
+        label: 'checkout_aud',
+        draft: { ...checkoutDraft.unsignedMandatePayload, aud: 'other-aud' },
+      },
+      {
+        label: 'checkout_iat',
+        draft: { ...checkoutDraft.unsignedMandatePayload, iat: checkoutDraft.unsignedMandatePayload.iat + 1 },
+      },
+      {
+        label: 'checkout_exp',
+        draft: { ...checkoutDraft.unsignedMandatePayload, exp: checkoutDraft.unsignedMandatePayload.exp + 1 },
+      },
+      {
+        label: 'checkout_nonce',
+        draft: { ...checkoutDraft.unsignedMandatePayload, nonce: 'checkout_tampered' },
       },
     ];
 
