@@ -13,7 +13,7 @@ Repository-wide engineering guidance for human and AI contributors. Prefer this 
 - `FLOW.md` is the authoritative product scope for the KYA local-agent authentication MVP.
 - The repository contains a TypeScript application: a Hono API, a Vite/React ceremony wizard, and Base/ERC-8004, KYC, credential, and persistence modules.
 - npm scripts provide the reproducible lint, typecheck, test, build, and demo-ceremony workflows documented in `README.md`.
-- Demo mode is locally verified; real KYC and browser-wallet on-chain writes remain explicitly marked live-not-executed until credentials and external authorization are provided.
+- This build mocks the ceremony end-to-end for demo purposes; there is no live mode, no wallet/SIWE, no KYC provider, and no on-chain write in this codebase. The live design is documented in `FLOW.md` as a target, not a current capability.
 - External protocol, provider, address, and ABI provenance is recorded in `docs/SOURCES.md`; do not replace authoritative sources with assumptions.
 
 ## Development workflow

@@ -1,30 +1,29 @@
 # KYA — Know Your Agent
 
-Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). The current implementation covers that identity ceremony; the next planned workstream adds a mock Juno merchant catalog and semantic product discovery. Real Juno connectivity, checkout, payment execution, settlement, and AP2 remain out of scope.
+Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). This build mocks the entire ceremony end-to-end for demo purposes: no real wallet, no real KYC provider, no on-chain writes. The next planned workstream adds a mock Juno merchant catalog and semantic product discovery. Real Juno connectivity, checkout, payment execution, settlement, and AP2 remain out of scope.
 
-**Authoritative product scope:** [`FLOW.md`](./FLOW.md)
+**Authoritative product scope (target design):** [`FLOW.md`](./FLOW.md)
 
 ## Status (honest)
 
+This build is a **fully mocked demo** — every external effect (wallet sign-in, KYC verification, on-chain registration) is a labeled in-process stand-in. There is no live mode, no `KYA_MODE` flag, and no wiring to a real wallet, KYC provider, or chain in this codebase.
+
 | Claim | Meaning |
 | --- | --- |
-| **Code-complete** | Path implemented with tests |
-| **Demo-verified** | `npm test` + `npm run demo:ceremony` pass on labeled demo path |
-| **Live-not-executed** | Live wiring exists; CI does **not** run real KYC or public-chain writes |
-| **Planned** | Product contract documented; no implementation is claimed |
+| **Mocked** | Implemented and exercised by `npm test` / `npm run demo:ceremony`; no real external effect |
+| **Planned** | Product contract documented in `FLOW.md`; not implemented in this codebase |
 
-Default `KYA_MODE=demo`. Live connectors stay disabled until env is configured.
+## What this build does
 
-## What the current MVP does (F0–F5)
-
-| Phase | Delivery | Status |
+| Step | Delivery | Status |
 | --- | --- | --- |
-| F0 | KYC adapters + browser wallet SIWE (demo bypass labeled; live viem verify) | Code-complete + demo-verified; live-not-executed |
-| F1 | Device enrollment + fingerprint + Principal | Code-complete + demo-verified |
-| F2 | Direct browser-wallet `register(agentURI)` with simulate-before-write | Code-complete; live-not-executed |
-| F3 | Event watchers + JWS + challenge (`ownerOf` fail-closed) | Code-complete + demo-verified; live watcher wired |
-| F4 | Rotation / transfer rebind + Incode/Veriff adapters | Code-complete + demo-verified |
-| F5 | Mainnet gate (flags + live code/`getVersion`) | Code-complete |
+| Local agent key | P-256 WebCrypto key generation, thumbprint, fingerprint display | Mocked/real crypto — key never leaves the device |
+| Human sign-in | Labeled mock session (`/v1/auth/login`) — no wallet, no SIWE | Mocked |
+| KYC | Instant mock verification (`/v1/kyc/complete`) — no external provider | Mocked |
+| Fingerprint approval | Confirms the enrolled public key before binding | Real (in-process) |
+| Register | Assigns a display-plausible `agentId`/registry ref — no on-chain write | Mocked |
+| Credential | Genuine ES256 JWS (`cnf.jkt`-bound) issued by the platform | Real (in-process) |
+| Challenge / verify | Real signature challenge over the local CryptoKey | Real (in-process) |
 
 ## Planned Juno catalog extension (J0–J2)
 
@@ -42,12 +41,12 @@ The structured catalog snapshot remains the source of truth. Embeddings and the 
 
 ```bash
 npm install
-cp .env.example .env   # names only; keep KYA_MODE=demo
+cp .env.example .env
 npm run dev            # API on :8787
 npm run dev:web        # wizard on :5173 (proxies to API)
 ```
 
-Open http://localhost:5173 and run the ceremony wizard, or:
+Open http://localhost:5173 and run the ceremony wizard, or run the deterministic CLI demo:
 
 ```bash
 npm run demo:ceremony
@@ -56,7 +55,7 @@ npm run demo:ceremony
 ## Stack
 
 - TypeScript, Hono API, Vite + React wizard (`AgentKeyProvider` for CryptoKey handle)
-- `viem` (EIP-1193 browser wallet, SIWE, Base Sepolia/Mainnet reads)
+- `viem` (address utilities only — no wallet, SIWE, or chain calls in this build)
 - `jose` (ES256 JWS/JWT, RFC 7638 thumbprints)
 - File/JSON persistence for hackathon MVP
 - Vitest + ESLint
@@ -64,34 +63,29 @@ npm run demo:ceremony
 
 ## Security boundaries
 
-- KYC verifies **people only**; providers never see the agent.
-- `KYA_MODE=live` forbids demo KYC adapter, demo webhooks, and demo completion bypass.
+- KYC verifies **people only**; the mock KYC step never sees agent material.
 - One verified Principal may authorize **multiple** agents; re-KYC only if missing/expired.
 - Local private keys never leave the device; browser WebCrypto is **not** claimed as hardware proof.
-- `register(agentURI)` is simulated and submitted by the **authenticated browser wallet** — KYA is never `msg.sender`.
-- The same address signs SIWE, owns the verified Principal, submits the transaction, and must match `ownerOf` before credential issuance.
-- The user wallet needs Base Sepolia ETH for gas; the MVP does not sponsor transactions.
+- Registration is a labeled mock — no `msg.sender`, no gas, no chain write occurs in this build.
 - Enrollment detail requires session + owner auth; public `/v1/resolve` has no PII.
-- `accountsChanged`, `chainChanged`, and `disconnect` invalidate sensitive live steps.
-- The Juno mock uses synthetic catalog data and no real provider credential.
+- The Juno mock (planned) will use synthetic catalog data and no real provider credential.
 - Agent identity and Principal data are not embedded in the catalog index.
 
-## Curated Identity Registry
+## Curated Identity Registry (display-only reference)
+
+The addresses below are the officially curated ERC-8004 Identity Registry contracts. This build only echoes the Sepolia address for display (`GET /v1/config`) — it performs no on-chain reads or writes and does not vendor the ABI.
 
 | Network | Chain ID | Address |
 | --- | --- | --- |
 | Base Sepolia | 84532 | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
-| Base Mainnet | 8453 | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` (promotion gate) |
-
-ABI: [`abis/IdentityRegistry.json`](./abis/IdentityRegistry.json) from [erc-8004/erc-8004-contracts](https://github.com/erc-8004/erc-8004-contracts).
+| Base Mainnet | 8453 | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 
 ## Docs
 
-- [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) — architecture, status vocabulary, live config
-- [`docs/SOURCES.md`](./docs/SOURCES.md) — provenance for every external dependency
+- [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) — architecture and status vocabulary for this mocked build
+- [`docs/SOURCES.md`](./docs/SOURCES.md) — provenance for external references still in use
 - [`docs/SKILLS.md`](./docs/SKILLS.md) — skill search/install inventory (2026-08-29)
-- [`docs/BROWSER_WALLET_MIGRATION_SPEC.md`](./docs/BROWSER_WALLET_MIGRATION_SPEC.md) — accepted and implemented wallet migration
-- [`FLOW.md`](./FLOW.md) — product flow and acceptance checklist
+- [`FLOW.md`](./FLOW.md) — target product flow and acceptance checklist (design reference; not all of it is implemented here)
 
 ## Scripts
 

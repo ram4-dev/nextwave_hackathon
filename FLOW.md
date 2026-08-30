@@ -1,13 +1,16 @@
 # FLOW — Autenticación KYA y descubrimiento de catálogo Juno
 
+> **Nota de alcance:** este documento describe el **diseño objetivo** del producto. El build actual en este repositorio implementa la ceremonia de identidad **completamente mockeada** para demo (sin wallet real, sin SIWE, sin proveedor KYC externo, sin escritura on-chain — ver [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) para lo que existe hoy). Todo lo marcado abajo como "diseño objetivo" o "planificado" **no** está implementado en este build.
+
 ## Decisión ejecutiva
 
 **KYC es solo para personas** y, en condiciones normales, **se hace una sola vez**. La persona autoriza uno o más agentes compradores locales que corren en su PC. La plataforma KYA vincula un **Principal ID** seudónimo verificado a un **Agent ID ERC-8004** y a la **clave pública local** del agente.
 
-La única conexión de wallet del MVP live es **`BrowserWalletConnector`**: descubre
-providers inyectados, autentica con SIWE y envía directamente
-`register(agentURI)` desde la misma dirección verificada. No hay abstracción de
-cuenta ni sponsorship de gas; el usuario paga gas de Base Sepolia.
+En el diseño objetivo (live, no implementado en este build), la única conexión de
+wallet sería **`BrowserWalletConnector`**: descubre providers inyectados, autentica
+con SIWE y envía directamente `register(agentURI)` desde la misma dirección
+verificada, sin abstracción de cuenta ni sponsorship de gas. En este build, el
+sign-in y el register son pasos mockeados y etiquetados como tales.
 
 La siguiente capacidad planificada usa esa identidad para que un agente comprador
 consulte, en lenguaje natural, un catálogo agregado de comercios que aceptan
@@ -15,12 +18,12 @@ consulte, en lenguaje natural, un catálogo agregado de comercios que aceptan
 Juno**, datos sintéticos y un índice vectorial generado offline. No conecta con
 Juno real ni ejecuta compras o pagos.
 
-| Implementado hoy | Extensión planificada | Fuera de alcance |
+| Implementado hoy (mock) | Diseño objetivo / planificado | Fuera de alcance |
 | --- | --- | --- |
-| Ceremonia de identidad (persona ↔ agente local ↔ KYA) | API mock de comercios y productos Juno | Integración con la API real de Juno |
-| Enrollment, credencial KYA, autenticación del agente | Pipeline offline de normalización e indexación vectorial | Checkout, captura, pago y liquidación |
-| Binding Principal ID + ERC-8004 + clave local | Búsqueda semántica de productos entre merchants | AP2 y otros protocolos de pago |
-| Consumo del Identity Registry curated | Resultados con precio, disponibilidad y frescura de catálogo | Deploy de registry propio; Hardhat/Foundry en runtime |
+| Ceremonia de identidad end-to-end mockeada (persona ↔ agente local ↔ KYA) | Wallet real + SIWE; KYC hospedado real; `register` on-chain real | Integración con la API real de Juno |
+| Enrollment, credencial KYA real (JWS ES256), autenticación challenge del agente | API mock de comercios y productos Juno | Checkout, captura, pago y liquidación |
+| Clave local P-256 real (WebCrypto), nunca sale del dispositivo | Pipeline offline de normalización e indexación vectorial; búsqueda semántica | AP2 y otros protocolos de pago |
+| Referencia display-only al Identity Registry curated (sin lectura/escritura on-chain) | Consumo real del Identity Registry curated | Deploy de registry propio; Hardhat/Foundry en runtime |
 
 **Actores de la ceremonia (4):** Usuario · Agente local · Plataforma KYA · Proveedor KYC.  
 ERC-8004 es **infraestructura interna** de Plataforma KYA, no un quinto actor de negocio.

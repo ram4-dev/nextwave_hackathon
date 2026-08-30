@@ -137,32 +137,6 @@ button:disabled {
   cursor: not-allowed;
 }
 
-.wallet-select {
-  display: grid;
-  gap: 0.35rem;
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
-select {
-  min-width: 220px;
-  font: inherit;
-  color: var(--ink);
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  padding: 0.65rem 0.75rem;
-}
-
-select:disabled {
-  opacity: 0.45;
-}
-
-button.secondary {
-  background: transparent;
-  color: var(--ink);
-  border: 1px solid var(--line);
-}
-
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.85rem;
