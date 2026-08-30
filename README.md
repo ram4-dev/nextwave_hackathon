@@ -19,7 +19,7 @@ Default `KYA_MODE=demo`. Live connectors stay disabled until env is configured.
 
 **Payments (F6 + F7 readiness):** the root Hono app hosts a provider-agnostic platform payment API. An independent `yuno_mock` REST process implements the pinned Yuno OpenAPI snapshot. Agents use platform MCP tools that call only platform `/v1` over HTTP. F7 offline swap-readiness (`YUNO_PROVIDER_ENV`, fail-closed sandbox/production config, `npm run yuno:sandbox:readiness`) is implemented; a live Yuno sandbox contract run remains **LIVE-NOT-EXECUTED**. See [`docs/PAYMENTS.md`](./docs/PAYMENTS.md).
 
-**Legacy remote artifacts:** `a2y.html`, `mcp.py`, `requirements.txt`, and `__pycache__/mcp.cpython-312.pyc` are preserved unchanged from `origin/demo_mock` for migration traceability. They are not the canonical implementation for this delivery; the canonical implementation remains the TypeScript REST API described above.
+**Legacy remote artifacts:** `a2y.html`, `mcp.py`, and `requirements.txt` are preserved unchanged from `origin/demo_mock` for migration traceability. They are not the canonical implementation for this delivery; the canonical implementation remains the TypeScript REST API described above.
 
 ## What the current MVP does (F0–F5)
 
