@@ -254,7 +254,10 @@ export class Eip712TrustedSurfaceService {
     });
     if (!valid) throw new DomainError('Invalid EIP-712 approval signature', 'APPROVAL_SIGNATURE');
 
-    // Persist proof and activate atomically via registry activation bound to the verified payload hash.
+    // Persist challenge consumption inside the registry activation critical section.
+    // Local in-memory atomicity only — durable production must share one DB transaction for
+    // mandate activation + challenge consumption. Failure leaves mandate awaiting_user_signature
+    // and the challenge unconsumed/retryable.
     const active = await this.dependencies.registry.activateWithVerifiedSignature({
       id: mandate.id,
       signature: input.signature,
@@ -264,15 +267,25 @@ export class Eip712TrustedSurfaceService {
       verifier: {
         verify: async ({ expectedPayloadHash }) => expectedPayloadHash === challenge.expectedPayloadHash && valid,
       },
+      persistProof: async (activationProof) => {
+        await this.dependencies.approvalStore.consume({
+          challengeId: challenge.id,
+          openMandateId: mandate.id,
+          ownerAddress,
+          signature: input.signature,
+          signedAt: activationProof.activatedAt,
+          payloadHash: challenge.expectedPayloadHash,
+        }, now);
+      },
     });
-    const proof = await this.dependencies.approvalStore.consume({
+    const proof: Eip712ApprovalProof = {
       challengeId: challenge.id,
       openMandateId: mandate.id,
       ownerAddress,
       signature: input.signature,
       signedAt: now.toISOString(),
       payloadHash: challenge.expectedPayloadHash,
-    }, now);
+    };
     return { mandate: active, proof };
   }
 }
