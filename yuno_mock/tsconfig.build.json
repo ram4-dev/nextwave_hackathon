@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "dist",
+    "types": ["node"],
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": [
+    "src/**/*",
+    "../src/providers/yuno/validate.ts",
+    "../src/providers/yuno/generated/mvp-operations.ts",
+    "../src/providers/yuno/generated/manifest.ts",
+    "../src/providers/yuno/generated/index.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "../src/providers/yuno/generated/openapi-types.ts"
+  ]
+}

@@ -79,7 +79,10 @@ export type StoredCheckoutDraft = {
   /** Hash-only lineage metadata (no JWT / PII beyond opaque subject reference already in the draft). */
   sub: string;
   aud: string;
-  /** Exact UTC draft window retained before the signed payload is truncated to seconds. */
+  /**
+   * Exact UTC draft window retained before the signed payload is truncated to seconds.
+   * The emitted jti/store key contains a domain-separated SHA-256 binding of both values.
+   */
   issuedAt: string;
   expiresAt: string;
   iat: number;
@@ -92,7 +95,10 @@ export type StoredPaymentDraft = {
   checkoutMandateDraftId: string;
   /** SHA-256 base64url of the exact canonical payment draft payload that was issued. */
   payloadHash: string;
-  /** Exact UTC payment window retained before the signed payload is truncated to seconds. */
+  /**
+   * Exact UTC payment window retained before the signed payload is truncated to seconds.
+   * The emitted jti/store key contains a domain-separated SHA-256 binding of both values.
+   */
   issuedAt: string;
   expiresAt: string;
   iat: number;
@@ -100,6 +106,12 @@ export type StoredPaymentDraft = {
 };
 
 export interface MandateReplayStore {
+  /**
+   * Store contract: records are keyed by the exact emitted jti and must round-trip
+   * unchanged. Implementations persist only strict hash/opaque lineage metadata,
+   * never JWTs, prompts, signatures, payment secrets, or private keys. The service
+   * revalidates the jti-bound exact window after every read, including custom stores.
+   */
   consumeNonce(transactionId: string, nonce: string): Promise<void>;
   rememberCheckoutDraft(id: string, record: StoredCheckoutDraft): Promise<void>;
   getCheckoutDraft(id: string): Promise<StoredCheckoutDraft | undefined>;

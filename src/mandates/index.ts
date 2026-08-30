@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { DomainError } from '../domain/state-machine.js';
-import { canonicalJson, checkoutHash, sha256Base64Url } from './canonical.js';
+import {
+  bindDraftIdToExactWindow,
+  canonicalJson,
+  checkoutHash,
+  isDraftIdBoundToExactWindow,
+  sha256Base64Url,
+  type DraftWindowKind,
+} from './canonical.js';
 import { InMemoryMandateReplayStore } from './replay-store.js';
 export {
   Eip712TrustedSurfaceService,
@@ -285,6 +292,24 @@ export function createMandateService(options: CreateMandateServiceOptions) {
     }
   }
 
+  function issueDraftId(
+    kind: DraftWindowKind,
+    window: { issuedAt: string; expiresAt: string },
+  ): string {
+    const opaqueId = `${kind}_draft_${randomUUID().replace(/-/g, '')}`;
+    return bindDraftIdToExactWindow(kind, opaqueId, window);
+  }
+
+  function assertExactWindowBinding(
+    kind: DraftWindowKind,
+    id: string,
+    window: { issuedAt: string; expiresAt: string },
+  ): void {
+    if (!isDraftIdBoundToExactWindow(kind, id, window)) {
+      throw new DomainError('Draft exact temporal lineage does not match its issued id', 'DRAFT_LINEAGE');
+    }
+  }
+
   return {
     async createMerchantCheckout(input: CreateMerchantCheckoutInput) {
       const current = currentTime();
@@ -311,7 +336,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
       };
       assertCheckoutDraftPayloadWindow(checkout, draftWindow);
       await replayStore.consumeNonce(checked.transactionId, checked.nonce);
-      const id = `checkout_draft_${randomUUID().replace(/-/g, '')}`;
+      const id = issueDraftId('checkout', checked);
       const unsignedMandatePayload: CheckoutMandatePayload = {
         vct: 'mandate.checkout.1', transaction_id: checked.transactionId, checkout_hash: checked.checkoutHash, checkout_jwt: checked.checkoutJwt,
         sub: checked.userReference, aud: credentialProviderAudience, ...draftWindow, nonce: checked.nonce, jti: id,
@@ -350,6 +375,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         throw new DomainError('Checkout mandate reference is invalid', 'CHECKOUT_MANDATE_REFERENCE');
       }
       assertCheckoutDraftWindow(checkout, checkoutDraft);
+      assertExactWindowBinding('checkout', checked.checkoutMandateDraftId, checkoutDraft);
       assertPaymentDraftWindow(checkoutDraft, checked);
       const paymentIat = Math.floor(Date.parse(checked.issuedAt) / 1000);
       const paymentExp = Math.floor(Date.parse(checked.expiresAt) / 1000);
@@ -360,7 +386,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         exp: paymentExp,
       });
       await replayStore.consumeNonce(checked.transactionId, checked.nonce);
-      const id = `payment_draft_${randomUUID().replace(/-/g, '')}`;
+      const id = issueDraftId('payment', checked);
       const unsignedMandatePayload: PaymentMandatePayload = {
         vct: 'mandate.payment.1', transaction_id: checked.transactionId, checkout_hash: checked.checkoutHash, checkout_mandate_draft_id: checked.checkoutMandateDraftId,
         payee: checked.payee, payment_amount: { amount_minor: checked.paymentAmount.amountMinor, currency: checked.paymentAmount.currency },
@@ -430,6 +456,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
           throw new DomainError('Checkout draft diverges from issued canonical payload', 'DRAFT_CONSISTENCY');
         }
         assertCheckoutDraftWindow(checkout, storedCheckout);
+        assertExactWindowBinding('checkout', draft.jti, storedCheckout);
         return { valid: true as const, transactionId: checkout.transactionId, checkoutHash: input.checkoutHash };
       }
 
@@ -456,6 +483,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         throw new DomainError('Checkout draft lineage is invalid', 'DRAFT_CONSISTENCY');
       }
       assertCheckoutDraftWindow(checkout, checkoutDraft);
+      assertExactWindowBinding('checkout', draft.checkout_mandate_draft_id, checkoutDraft);
       assertPaymentPayloadLineage(checkoutDraft, draft);
       const storedPayment = await replayStore.getPaymentDraft(draft.jti);
       const liveHash = sha256Base64Url(canonicalJson(draft));
@@ -471,6 +499,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         throw new DomainError('Payment draft diverges from issued canonical payload', 'DRAFT_CONSISTENCY');
       }
       assertPaymentDraftWindow(checkoutDraft, storedPayment);
+      assertExactWindowBinding('payment', draft.jti, storedPayment);
       return { valid: true as const, transactionId: checkout.transactionId, checkoutHash: input.checkoutHash };
     },
   };

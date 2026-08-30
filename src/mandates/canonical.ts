@@ -21,6 +21,51 @@ export function checkoutHash(jwt: string): string {
   return sha256Base64Url(jwt);
 }
 
+export type DraftWindowKind = 'checkout' | 'payment';
+
+type ExactDraftWindow = {
+  issuedAt: string;
+  expiresAt: string;
+};
+
+/**
+ * Bind the exact ISO window to the externally retained draft id. The bound id
+ * is also the payload jti, so persisted millisecond metadata cannot be changed
+ * while preserving both the emitted payload and its lookup key.
+ */
+export function bindDraftIdToExactWindow(
+  kind: DraftWindowKind,
+  opaqueId: string,
+  window: ExactDraftWindow,
+): string {
+  const binding = sha256Base64Url(canonicalJson({
+    vct: `mandate.${kind}.exact-window.1`,
+    draft_id: opaqueId,
+    issued_at: window.issuedAt,
+    expires_at: window.expiresAt,
+  }));
+  return `${opaqueId}.${binding}`;
+}
+
+export function isDraftIdBoundToExactWindow(
+  kind: DraftWindowKind,
+  id: string,
+  window: ExactDraftWindow,
+): boolean {
+  if (typeof id !== 'string' || id.length > 200) return false;
+  const separator = id.lastIndexOf('.');
+  if (separator <= 0) return false;
+  const opaqueId = id.slice(0, separator);
+  const binding = id.slice(separator + 1);
+  if (
+    !new RegExp(`^${kind}_draft_[A-Za-z0-9_:-]+$`).test(opaqueId)
+    || !/^[A-Za-z0-9_-]{43}$/.test(binding)
+  ) {
+    return false;
+  }
+  return bindDraftIdToExactWindow(kind, opaqueId, window) === id;
+}
+
 export function sha256Hex32(value: string): `0x${string}` {
   return `0x${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }

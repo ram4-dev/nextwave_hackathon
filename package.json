@@ -29,7 +29,17 @@
     "mandates:create": "tsx scripts/mandates-create.ts mandates:create",
     "contracts:compile": "hardhat compile",
     "contracts:test": "hardhat test",
-    "contracts:deploy:bsc-testnet": "hardhat run scripts/deploy-mandate-anchor.ts --network bscTestnet"
+    "contracts:deploy:bsc-testnet": "hardhat run scripts/deploy-mandate-anchor.ts --network bscTestnet",
+    "yuno:contract:update": "node scripts/update-yuno-openapi.mjs",
+    "yuno:contract:verify": "node scripts/verify-yuno-openapi.mjs",
+    "yuno:contract:generate": "node scripts/generate-yuno-contract.mjs",
+    "yuno:contract:check-generated": "node scripts/generate-yuno-contract.mjs --check",
+    "yuno:mock:start": "npm --prefix yuno_mock start",
+    "yuno:mock:build": "npm --prefix yuno_mock run build",
+    "yuno:mock:typecheck": "npm --prefix yuno_mock run typecheck",
+    "yuno:mock:test": "npm --prefix yuno_mock test",
+    "yuno:mock:lint": "npm --prefix yuno_mock run lint",
+    "yuno:sandbox:readiness": "tsx scripts/yuno-sandbox-readiness.ts"
   },
   "engines": {
     "node": ">=20"
@@ -39,6 +49,8 @@
     "@huggingface/transformers": "^3.7.2",
     "@openzeppelin/contracts": "^5.6.1",
     "@supabase/supabase-js": "^2.112.4",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "hono": "^4.8.5",
     "jose": "^6.0.11",
     "pg": "^8.16.3",
@@ -56,6 +68,7 @@
     "eslint": "^9.31.0",
     "globals": "^16.3.0",
     "hardhat": "^3.15.0",
+    "openapi-typescript": "7.13.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tsx": "^4.20.3",

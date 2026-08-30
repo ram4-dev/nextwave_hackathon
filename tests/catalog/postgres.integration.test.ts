@@ -258,7 +258,11 @@ describe('PostgreSQL catalog integration', () => {
 
     const service = new CatalogSearchService(repository, embedding);
     const beforeSearch = await catalogState(pool);
-    const hnsw = await service.search({ query: 'papas fritas', top_k: 5 });
+    // Cap the comparison within the deterministic fixture matches. Durable
+    // ACP rows from prior harness runs can have equal zero-similarity distance;
+    // an approximate index may select a different irrelevant fifth tie than
+    // the exact scan without changing the ranked catalog behavior under test.
+    const hnsw = await service.search({ query: 'papas fritas', top_k: 4 });
     expect(hnsw.search_mode).toBe('hnsw');
     expect(hnsw.results.length).toBeGreaterThan(0);
     expect(hnsw.results.some((row) => row.item_id === 'item_bastones_crocantes')).toBe(true);
@@ -292,7 +296,7 @@ describe('PostgreSQL catalog integration', () => {
 
     try {
       await pool.query('DROP INDEX catalog_search_current_embedding_hnsw');
-      const fallback = await service.search({ query: 'papas fritas', top_k: 5 });
+      const fallback = await service.search({ query: 'papas fritas', top_k: 4 });
       expect(fallback.search_mode).toBe('exact_fallback');
       expect(fallback.results.map((row) => row.item_id)).toEqual(hnsw.results.map((row) => row.item_id));
     } finally {

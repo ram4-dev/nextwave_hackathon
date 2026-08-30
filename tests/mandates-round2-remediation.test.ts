@@ -14,6 +14,7 @@ import {
   JsonFileMandateReplayStore,
   KyaAgentTrustVerifier,
   SupabaseMandatePolicyLedger,
+  bindDraftIdToExactWindow,
   createLocalMerchantSigner,
   createMandateService,
   isStrictEvidenceHash,
@@ -119,37 +120,56 @@ describe('round 3: replay temporal metadata boundaries', () => {
       const paymentRecord: StoredPaymentDraft = {
         transactionId: 'txn_store',
         checkoutHash: 'checkout_hash',
-        checkoutMandateDraftId: 'checkout_draft_store',
+        checkoutMandateDraftId: bindDraftIdToExactWindow(
+          'checkout',
+          'checkout_draft_store',
+          checkoutRecord,
+        ),
         payloadHash: 'payment_payload_hash',
         issuedAt: '2030-01-01T00:01:00.900Z',
         expiresAt: '2030-01-01T00:10:00.100Z',
         iat: Math.floor(Date.parse('2030-01-01T00:01:00.900Z') / 1000),
         exp: Math.floor(Date.parse('2030-01-01T00:10:00.100Z') / 1000),
       };
+      const checkoutId = paymentRecord.checkoutMandateDraftId;
+      const paymentId = bindDraftIdToExactWindow('payment', 'payment_draft_store', paymentRecord);
 
       for (const { label, store } of stores) {
-        await expect(store.rememberCheckoutDraft(`checkout_${label}`, checkoutRecord)).resolves.toBeUndefined();
-        await expect(store.rememberPaymentDraft(`payment_${label}`, paymentRecord)).resolves.toBeUndefined();
-        await expect(store.getCheckoutDraft(`checkout_${label}`)).resolves.toEqual(checkoutRecord);
-        await expect(store.getPaymentDraft(`payment_${label}`)).resolves.toEqual(paymentRecord);
+        await expect(store.rememberCheckoutDraft(checkoutId, checkoutRecord)).resolves.toBeUndefined();
+        await expect(store.rememberPaymentDraft(paymentId, paymentRecord)).resolves.toBeUndefined();
+        await expect(store.getCheckoutDraft(checkoutId)).resolves.toEqual(checkoutRecord);
+        await expect(store.getPaymentDraft(paymentId)).resolves.toEqual(paymentRecord);
 
-        await expect(store.rememberCheckoutDraft(`checkout_bad_time_${label}`, {
+        await expect(store.rememberCheckoutDraft(`checkout_unbound_${label}`, checkoutRecord))
+          .rejects.toMatchObject({ code: 'CHECKOUT_DRAFT_LINEAGE' });
+        await expect(store.rememberPaymentDraft(`payment_unbound_${label}`, paymentRecord))
+          .rejects.toMatchObject({ code: 'PAYMENT_DRAFT_LINEAGE' });
+
+        await expect(store.rememberCheckoutDraft(checkoutId, {
           ...checkoutRecord,
           issuedAt: 'not-a-time',
         })).rejects.toMatchObject({ code: 'CHECKOUT_DRAFT_LINEAGE' });
-        await expect(store.rememberPaymentDraft(`payment_bad_time_${label}`, {
+        await expect(store.rememberPaymentDraft(paymentId, {
           ...paymentRecord,
           expiresAt: 'not-a-time',
         })).rejects.toMatchObject({ code: 'PAYMENT_DRAFT_LINEAGE' });
-        await expect(store.rememberPaymentDraft(`payment_bad_seconds_${label}`, {
+        await expect(store.rememberCheckoutDraft(checkoutId, {
+          ...checkoutRecord,
+          issuedAt: Symbol('invalid-checkout-time') as unknown as string,
+        })).rejects.toMatchObject({ code: 'CHECKOUT_DRAFT_LINEAGE' });
+        await expect(store.rememberPaymentDraft(paymentId, {
+          ...paymentRecord,
+          expiresAt: Symbol('invalid-payment-time') as unknown as string,
+        })).rejects.toMatchObject({ code: 'PAYMENT_DRAFT_LINEAGE' });
+        await expect(store.rememberPaymentDraft(paymentId, {
           ...paymentRecord,
           iat: paymentRecord.iat + 1,
         })).rejects.toMatchObject({ code: 'PAYMENT_DRAFT_LINEAGE' });
-        await expect(store.rememberCheckoutDraft(`checkout_secret_${label}`, {
+        await expect(store.rememberCheckoutDraft(checkoutId, {
           ...checkoutRecord,
           prompt: 'secret_prompt_marker',
         } as StoredCheckoutDraft)).rejects.toMatchObject({ code: 'CHECKOUT_DRAFT_LINEAGE' });
-        await expect(store.rememberPaymentDraft(`payment_secret_${label}`, {
+        await expect(store.rememberPaymentDraft(paymentId, {
           ...paymentRecord,
           checkoutJwt: 'secret_jwt_marker',
         } as StoredPaymentDraft)).rejects.toMatchObject({ code: 'PAYMENT_DRAFT_LINEAGE' });

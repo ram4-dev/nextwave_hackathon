@@ -19,6 +19,18 @@ This phase is a domain library, not an HTTP/MCP integration. Its deterministic f
 
 A draft is **not** a payment authorization, a payment, or a final processor charge. No PAN, CVC/CVV, processor token, Yuno token, user PII, automatic purchase, or live chain write is accepted or created by this library.
 
+### Replay-store temporal integrity
+
+Draft payloads keep AP2 `iat`/`exp` as integer seconds, while the replay store
+retains the original UTC ISO window in milliseconds for exact containment. The
+emitted `jti` is content-bound to that exact window with a domain-separated
+SHA-256 digest and is also covered by the canonical payload hash. A replay store
+must key the record by that exact `jti`, round-trip the strict hash/opaque
+metadata unchanged, and never persist JWTs, prompts, signatures, payment
+secrets, or private keys. Both built-in stores validate this on write and read;
+the mandate service repeats the validation after every read so injected stores
+fail closed. Legacy/unbound draft records must be reissued rather than trusted.
+
 The merchant JWT is ES256 only. The local signer and `mandates:create` CLI are development/test-only and require an explicit `NODE_ENV=development` or `NODE_ENV=test` (no implicit default). Production must inject a `MerchantSigner` backed by the deployment's secret provider or HSM.
 
 ```bash
