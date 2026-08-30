@@ -12,36 +12,35 @@
 ## Implementado en este repositorio
 
 - Biblioteca de dominio AP2 en `src/mandates` con validación Zod estricta.
-- Trusted Surface EIP-712 (Base Sepolia/Base) con activación atómica ligada al hash canónico.
-- Ledger de política in-memory + migración Supabase con presupuesto/ops/frecuencia **por mandato**.
-- Contrato `MandateAnchor` (Hardhat) con roles distintos admin/pauser/anchorer; pruebas locales.
-- Outbox hash-only + worker inyectable con `FakeMandateAnchorClient` (sin RPC real).
+- Trusted Surface EIP-712 (Base Sepolia/Base) con activación ligada al hash canónico.
+- **Atomicidad local in-memory:** `activateWithVerifiedSignature` ejecuta `persistProof` (p. ej. `approvalStore.consume`) dentro de la sección crítica antes de marcar `active`. Si la persistencia falla, el mandato permanece `awaiting_user_signature` y el challenge queda reintentable.
+- **Pendiente durable:** registry + challenge/proof deben compartir una única transacción de base de datos en producción. No afirmar atomicidad durable inexistente.
+- Ledger de política in-memory compartido por `InMemoryOpenMandateRegistry.policyLedger` + migración Supabase con presupuesto/ops/frecuencia **por mandato**.
+- Contrato `MandateAnchor` (Hardhat) con roles distintos admin/pauser/anchorer; pruebas locales; todos los hashes de evidencia deben ser no-cero.
+- Outbox hash-only + worker inyectable con `FakeMandateAnchorClient`, estado `processing` + lease, `maxAttempts` y `txHash` persistido (sin RPC real).
 
 ## Pendiente / fuera de alcance operativo
 
 - Escrituras on-chain reales del worker (requiere RPC, clave de anclador y contrato desplegado fuera del repo).
 - Ejecución de pagos / Yuno / tokenización.
-- Registry durable multi-instancia de mandatos abiertos y challenges (hoy hay stores in-memory + RPC de política/requests).
+- Registry durable multi-instancia de mandatos abiertos y challenges.
 - KMS/HSM de producción para `AgentMandateSigner` / `MerchantSigner`.
 
 ## Configuración local actual
 
 - Node.js 20 o superior.
 - `KYA_MODE=demo` para trabajar sin KYC, pagos ni blockchain real.
-- `KYA_DATA_DIR=.kya-data` para el store local KYA existente.
-- Para emitir Checkout JWT en desarrollo: una JWK privada ES256 de merchant en `MERCHANT_SIGNING_PRIVATE_JWK`, o la clave efímera de desarrollo. Nunca usar una clave real en un fixture.
-- Usar [`fixtures/mandate-store.example.json`](../fixtures/mandate-store.example.json) sólo como forma de los datos locales. No contiene secretos ni datos reales.
+- Drafts CLI (fail-closed): `NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json`
+- `MERCHANT_SIGNING_PRIVATE_JWK` opcional en development/test. Nunca usar una clave real en un fixture.
 
-## Anclaje (diseño; live no ejecutado)
+## Migraciones Supabase
 
-- Red de diseño documentada: BSC Testnet, chain ID `97`. Credenciales fuera del repositorio.
-- El worker tiene exclusivamente el rol on-chain de anclador. Admin ≠ pauser ≠ anchorer.
-- El runtime KYA no escribe en cadena; Hardhat sirve para compilar/probar el contrato de evidencia.
+Ejecutá en orden:
 
-## Persistencia de políticas y requests
-
-Ejecuta `supabase/migrations/20260830_create_mandate_policy_ledger.sql` y `supabase/migrations/20260830_create_mandate_requests.sql`. El RPC de reserva aplica límites por mandato de checkout y de pago con orden de locks determinista. La tabla de requests **no** tiene columna `prompt`; sólo `prompt_hash` y `encrypted_prompt_ref` opcional.
+1. `supabase/migrations/20260830_create_mandate_policy_ledger.sql`
+2. `supabase/migrations/20260830_create_mandate_requests.sql`
+3. `supabase/migrations/20260830_upgrade_mandate_schema_v2.sql` (upgrade idempotente: elimina `prompt`, drop del RPC request viejo y del `reserve_mandate_policy` de 9 args, asegura funciones/índices/grants/RLS nuevos)
 
 ## Trusted Surface EIP-712
 
-La firma explícita del usuario usa la wallet ya vinculada por KYA, en Base Sepolia (`84532`) o Base (`8453`). `verifyAndRecordApproval()` revalida el hash canónico del payload antes de activar y persiste la prueba de activación ligada a ese hash.
+La firma explícita del usuario usa la wallet ya vinculada por KYA, en Base Sepolia (`84532`) o Base (`8453`). `verifyAndRecordApproval()` revalida el hash canónico del payload y persiste la prueba de activación dentro de la sección crítica local antes de activar.

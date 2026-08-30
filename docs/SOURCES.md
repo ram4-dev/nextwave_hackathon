@@ -59,5 +59,12 @@ Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
 | `@huggingface/transformers` feature extraction | https://github.com/huggingface/transformers.js | Local `pipeline('feature-extraction')`; preferred model `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384-d). Query text stays in-process. |
 | Credential short TTL default | 900s (product security rule) | `CREDENTIAL_TTL_SECONDS` |
 | Platform signing private key | Live: `KYA_SIGNING_PRIVATE_JWK` or `KYA_SIGNING_KEY_FILE` (secret-backed). Demo: process-local ephemeral. Never persist `d`/`privateJwk` in store.json | `credentials/signer.ts`, `JsonFileRepository` scrub |
+| AP2 specification (Agent Payments Protocol) | https://github.com/google-agentic-commerce/AP2/blob/main/docs/ap2/specification.md (retrieved 2026-08-30) | Mandate draft/closed vocabulary and cart/payment intent framing for `src/mandates` |
+| OpenZeppelin Contracts 5 AccessControl | https://docs.openzeppelin.com/contracts/5.x/api/access#AccessControl | `contracts/MandateAnchor.sol` roles (`DEFAULT_ADMIN_ROLE`, custom pauser/anchorer) |
+| Hardhat 3 | https://hardhat.org/docs | `hardhat.config.ts`, `npm run contracts:compile` / `contracts:test` |
+| BNB Chain BSC Testnet (chain 97) | https://docs.bnbchain.org/bnb-smart-chain/developers/wallet-configuration/ | Documented anchor network for mandate evidence (live writes out of scope for fake worker) |
+| Supabase Postgres RLS | https://supabase.com/docs/guides/database/postgres/row-level-security | `mandate_requests` / `mandate_policy_reservations` RLS + revoke from `anon`/`authenticated` |
+| Supabase Database Functions | https://supabase.com/docs/guides/database/functions | `create_mandate_request`, `reserve_mandate_policy` RPCs |
+| Supabase Migrations | https://supabase.com/docs/guides/deployment/database-migrations | `supabase/migrations/20260830_*.sql` including upgrade v2 |
 
 Re-verify curated registry addresses and ABI before any live promotion.

@@ -165,7 +165,11 @@ npm run contracts:compile
 npm run contracts:test
 ```
 
-`MERCHANT_SIGNING_PRIVATE_JWK` may provide a P-256 private JWK in development/test. Production rejects the local signer unless an explicit non-production `nodeEnv` is supplied; inject a KMS/HSM `MerchantSigner` instead. See [`docs/AP2_MANDATES.md`](./docs/AP2_MANDATES.md), [`docs/AP2_IMPLEMENTATION_SETUP.md`](./docs/AP2_IMPLEMENTATION_SETUP.md), and [`docs/AP2_AUTONOMY_THREAT_MODEL.md`](./docs/AP2_AUTONOMY_THREAT_MODEL.md).
+`MERCHANT_SIGNING_PRIVATE_JWK` may provide a P-256 private JWK in development/test. Production rejects the local signer; inject a KMS/HSM `MerchantSigner` instead. CLI requires an explicit environment:
+
+```bash
+NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json
+```
 
 ## License
 
