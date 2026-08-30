@@ -2,7 +2,7 @@
   "name": "kya-local-agent-auth",
   "version": "0.1.0",
   "private": true,
-  "description": "KYA — Know Your Agent local-agent authentication on Base (ERC-8004)",
+  "description": "KYA \u2014 Know Your Agent local-agent authentication on Base (ERC-8004)",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
@@ -16,6 +16,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "demo:ceremony": "tsx scripts/demo-ceremony.ts",
+    "catalog:up": "docker compose -f docker-compose.catalog.yml up -d --wait",
+    "catalog:down": "docker compose -f docker-compose.catalog.yml down",
+    "catalog:migrate": "tsx scripts/migrate-juno-catalog.ts",
+    "catalog:load": "tsx scripts/load-juno-catalog.ts",
+    "catalog:provision": "tsx scripts/provision-merchant-api-key.ts",
+    "catalog:revoke": "tsx scripts/revoke-merchant-api-key.ts",
+    "catalog:rotate": "tsx scripts/rotate-merchant-api-key.ts",
+    "catalog:worker": "tsx scripts/reindex-catalog-worker.ts",
+    "catalog:harness": "tsx scripts/harness-acp-catalog.ts",
     "mandates:create": "tsx scripts/mandates-create.ts mandates:create",
     "contracts:compile": "hardhat compile",
     "contracts:test": "hardhat test",
@@ -25,22 +34,21 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@base-org/account": "^2.4.0",
     "@hono/node-server": "^1.14.4",
+    "@huggingface/transformers": "^3.7.2",
     "@openzeppelin/contracts": "^5.6.1",
     "@supabase/supabase-js": "^2.112.4",
     "hono": "^4.8.5",
     "jose": "^6.0.11",
+    "pg": "^8.16.3",
     "viem": "^2.33.2",
     "zod": "^3.25.76"
-  },
-  "overrides": {
-    "axios": "1.20.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
     "@types/node": "^22.16.5",
+    "@types/pg": "^8.15.5",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.7.0",

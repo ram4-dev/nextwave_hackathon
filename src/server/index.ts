@@ -1,5 +1,12 @@
 import { serve } from '@hono/node-server';
 import path from 'node:path';
+import pg from 'pg';
+import { MerchantFeedAuthorizer } from '../catalog/acp-contract.js';
+import { TransformersEmbeddingProvider } from '../catalog/embedding.js';
+import { acpIngestionOptionsFromConfig } from '../catalog/ingestion.js';
+import { PostgresAcpIngestionService, PostgresMerchantKeyStore } from '../catalog/postgres-acp-store.js';
+import { PostgresCatalogRepository } from '../catalog/postgres-repository.js';
+import { CatalogSearchService } from '../catalog/search.js';
 import { loadConfig, type AppConfig } from '../config/env.js';
 import { JsonFileRepository } from '../persistence/repository.js';
 import { ensureSigningKey } from '../credentials/jws.js';
@@ -53,7 +60,24 @@ async function main() {
   const dataFile = path.resolve(config.KYA_DATA_DIR, 'store.json');
   const repo = new JsonFileRepository(dataFile);
   await ensureSigningKey(repo, config);
-  const { app } = createApp(repo, config);
+  const catalogPool = config.CATALOG_DATABASE_URL
+    ? new pg.Pool({ connectionString: config.CATALOG_DATABASE_URL })
+    : undefined;
+  const catalogSearch = catalogPool
+    ? new CatalogSearchService(
+        new PostgresCatalogRepository(catalogPool),
+        new TransformersEmbeddingProvider(config.CATALOG_EMBEDDING_MODEL),
+      )
+    : undefined;
+  const acpAuthorizer =
+    catalogPool && config.CATALOG_ACP_ENABLED
+      ? new MerchantFeedAuthorizer(new PostgresMerchantKeyStore(catalogPool))
+      : undefined;
+  const acpIngestion =
+    catalogPool && config.CATALOG_ACP_ENABLED
+      ? new PostgresAcpIngestionService(catalogPool, acpIngestionOptionsFromConfig(config))
+      : undefined;
+  const { app } = createApp(repo, config, { catalogSearch, acpAuthorizer, acpIngestion });
 
   let stopAllWatchers: (() => void) | undefined;
 
@@ -67,7 +91,7 @@ async function main() {
     }
   }
 
-  const shutdown = () => {
+  const shutdown = async () => {
     if (stopAllWatchers) {
       try {
         stopAllWatchers();
@@ -76,14 +100,13 @@ async function main() {
         console.error('Error stopping watchers', err);
       }
     }
+    await catalogPool?.end();
     process.exit(0);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => void shutdown());
+  process.on('SIGTERM', () => void shutdown());
 
-  console.log(
-    `KYA server listening on :${config.PORT} mode=${config.KYA_MODE} (COOP=same-origin-allow-popups)`,
-  );
+  console.log(`KYA server listening on :${config.PORT} mode=${config.KYA_MODE}`);
   serve({ fetch: app.fetch, port: config.PORT });
 }
 

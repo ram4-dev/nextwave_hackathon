@@ -1,13 +1,13 @@
 # Skills search & install provenance
 
 **Date:** 2026-08-29  
-**Context:** Skill discovery for KYA (Base Account, viem, Didit KYC, JWT, ERC-8004).
+**Context:** Skill discovery for KYA (Base network, browser-wallet viem, Didit KYC, JWT, ERC-8004).
 
 ## Requested / installed skills
 
 | Request | Catalog result | Installs | Stars | Notes |
 | --- | --- | --- | --- | --- |
-| `base/skills` as `building-with-base-account` | **`build-on-base`** (current catalog name) | 360 | 114 | Use for Base Account / SIWB / paymaster / `wallet_sendCalls` guidance |
+| `base/skills` as `building-with-base-account` | **`build-on-base`** (current catalog name) | 360 | 114 | Historical input; runtime path was replaced. Retained only for official Base network metadata and migration provenance. |
 | `uniswap/uniswap-ai@viem-integration` | `viem-integration` | 1K | 228 | viem client patterns |
 | `didit-protocol/skills@didit-kyc-onboarding` | `didit-kyc-onboarding` | 225 | 26 | Didit hosted KYC onboarding |
 | `mindrally/skills@jwt-security` | `jwt-security` | 1.4K | 246 | JWT/JWS security practices |

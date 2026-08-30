@@ -1,23 +1,23 @@
 import { createPublicClient, getAddress, http, type Hex } from 'viem';
-import { base, baseSepolia } from 'viem/chains';
+import { baseSepolia } from 'viem/chains';
 import { parseSiweMessage, verifySiweMessage } from 'viem/siwe';
 import type { AppConfig } from '../config/env.js';
 import { DomainError } from '../domain/state-machine.js';
 import type { Repository } from '../persistence/repository.js';
 import { newId } from '../persistence/repository.js';
 
-const BASE_CHAIN_IDS = new Set([8453, 84532]);
+const LIVE_CHAIN_ID = 84532;
 
 /** Reject SIWE issuedAt older/newer than this skew (seconds). */
-export const SIWB_ISSUED_AT_SKEW_SECONDS = 300;
+export const SIWE_ISSUED_AT_SKEW_SECONDS = 300;
 
-export interface SiwbVerifyInput {
+export interface SiweVerifyInput {
   address: `0x${string}`;
   message: string;
   signature: Hex;
 }
 
-export type SiwbPublicClient = {
+export type SiwePublicClient = {
   verifySiweMessage: (args: {
     address?: `0x${string}`;
     domain?: string;
@@ -31,26 +31,20 @@ export type SiwbPublicClient = {
 export function createAuthPublicClient(
   config: AppConfig,
   chainId: number,
-): SiwbPublicClient {
-  const transport =
-    chainId === 84532
-      ? http(config.BASE_SEPOLIA_RPC_URL ?? 'https://sepolia.base.org')
-      : chainId === 8453
-        ? http(config.BASE_MAINNET_RPC_URL ?? 'https://mainnet.base.org')
-        : null;
-  if (!transport) {
+): SiwePublicClient {
+  if (chainId !== LIVE_CHAIN_ID) {
     throw new DomainError(`Unsupported chain id ${chainId}`, 'CHAIN_ID');
   }
   const client = createPublicClient({
-    chain: chainId === 84532 ? baseSepolia : base,
-    transport,
+    chain: baseSepolia,
+    transport: http(config.BASE_SEPOLIA_RPC_URL ?? 'https://sepolia.base.org'),
   });
   return {
     verifySiweMessage: (args) => verifySiweMessage(client, args),
   };
 }
 
-export async function issueSiwbNonce(
+export async function issueSiweNonce(
   repo: Repository,
   ttlSeconds: number,
 ): Promise<{ nonce: string; expiresAt: string }> {
@@ -60,7 +54,7 @@ export async function issueSiwbNonce(
   await repo.withLock(async (store) => {
     store.nonces.push({
       nonce,
-      purpose: 'siwb',
+      purpose: 'siwe',
       createdAt: now.toISOString(),
       expiresAt,
     });
@@ -79,21 +73,21 @@ function assertNonceUsable(
     | undefined,
   nonce: string,
 ): void {
-  if (!record || record.purpose !== 'siwb' || record.nonce !== nonce) {
-    throw new DomainError('Unknown SIWB nonce', 'SIWB_NONCE');
+  if (!record || record.purpose !== 'siwe' || record.nonce !== nonce) {
+    throw new DomainError('Unknown SIWE nonce', 'SIWE_NONCE');
   }
   if (record.consumedAt) {
-    throw new DomainError('SIWB nonce already used', 'SIWB_REPLAY');
+    throw new DomainError('SIWE nonce already used', 'SIWE_REPLAY');
   }
   if (new Date(record.expiresAt).getTime() <= Date.now()) {
-    throw new DomainError('SIWB nonce expired', 'SIWB_EXPIRED');
+    throw new DomainError('SIWE nonce expired', 'SIWE_EXPIRED');
   }
 }
 
 /**
  * Parse + field-validate SIWE presentation (exact address, URI, chain, nonce,
  * issuedAt/expiration/notBefore). Signature is verified separately via
- * verifySiweMessage (ERC-6492 / smart-account compatible).
+ * verifySiweMessage.
  */
 export function assertSiwePresentationFields(
   message: string,
@@ -105,71 +99,68 @@ export function assertSiwePresentationFields(
   try {
     parsed = parseSiweMessage(message);
   } catch {
-    throw new DomainError('Malformed SIWE message', 'SIWB_MESSAGE');
+    throw new DomainError('Malformed SIWE message', 'SIWE_MESSAGE');
   }
 
   if (!parsed.nonce) {
-    throw new DomainError('SIWE message missing nonce', 'SIWB_NONCE');
+    throw new DomainError('SIWE message missing nonce', 'SIWE_NONCE');
   }
-  if (parsed.chainId == null || !BASE_CHAIN_IDS.has(parsed.chainId)) {
-    throw new DomainError(
-      'SIWE chain ID must be Base (8453) or Base Sepolia (84532)',
-      'CHAIN_ID',
-    );
+  if (parsed.chainId !== LIVE_CHAIN_ID) {
+    throw new DomainError('SIWE chain ID must be Base Sepolia (84532)', 'CHAIN_ID');
   }
-  if (!parsed.domain || parsed.domain.toLowerCase() !== config.SIWB_DOMAIN.toLowerCase()) {
-    throw new DomainError('SIWE domain mismatch', 'SIWB_DOMAIN');
+  if (!parsed.domain || parsed.domain.toLowerCase() !== config.SIWE_DOMAIN.toLowerCase()) {
+    throw new DomainError('SIWE domain mismatch', 'SIWE_DOMAIN');
   }
-  if (!parsed.uri || parsed.uri !== config.SIWB_URI) {
-    throw new DomainError('SIWE URI mismatch', 'SIWB_URI');
+  if (!parsed.uri || parsed.uri !== config.SIWE_URI) {
+    throw new DomainError('SIWE URI mismatch', 'SIWE_URI');
   }
   if (!parsed.address) {
-    throw new DomainError('SIWE message missing address', 'SIWB_ADDRESS');
+    throw new DomainError('SIWE message missing address', 'SIWE_ADDRESS');
   }
   let messageAddress: `0x${string}`;
   try {
     messageAddress = getAddress(parsed.address) as `0x${string}`;
   } catch {
-    throw new DomainError('SIWE message invalid address', 'SIWB_ADDRESS');
+    throw new DomainError('SIWE message invalid address', 'SIWE_ADDRESS');
   }
   if (messageAddress.toLowerCase() !== claimedAddress.toLowerCase()) {
-    throw new DomainError('SIWE address mismatch', 'SIWB_ADDRESS');
+    throw new DomainError('SIWE address mismatch', 'SIWE_ADDRESS');
   }
   if (parsed.version && parsed.version !== '1') {
-    throw new DomainError('SIWE version must be 1', 'SIWB_VERSION');
+    throw new DomainError('SIWE version must be 1', 'SIWE_VERSION');
   }
 
   const time = opts?.time ?? new Date();
   if (Number.isNaN(time.getTime())) {
-    throw new DomainError('Invalid SIWE validation time', 'SIWB_TIME');
+    throw new DomainError('Invalid SIWE validation time', 'SIWE_TIME');
   }
 
   if (parsed.expirationTime) {
     if (Number.isNaN(parsed.expirationTime.getTime())) {
-      throw new DomainError('Invalid SIWE expirationTime', 'SIWB_EXPIRED');
+      throw new DomainError('Invalid SIWE expirationTime', 'SIWE_EXPIRED');
     }
     if (time >= parsed.expirationTime) {
-      throw new DomainError('SIWE message expired', 'SIWB_EXPIRED');
+      throw new DomainError('SIWE message expired', 'SIWE_EXPIRED');
     }
   }
   if (parsed.notBefore) {
     if (Number.isNaN(parsed.notBefore.getTime())) {
-      throw new DomainError('Invalid SIWE notBefore', 'SIWB_NOT_BEFORE');
+      throw new DomainError('Invalid SIWE notBefore', 'SIWE_NOT_BEFORE');
     }
     if (time < parsed.notBefore) {
-      throw new DomainError('SIWE message not yet valid', 'SIWB_NOT_BEFORE');
+      throw new DomainError('SIWE message not yet valid', 'SIWE_NOT_BEFORE');
     }
   }
   if (parsed.issuedAt) {
     if (Number.isNaN(parsed.issuedAt.getTime())) {
-      throw new DomainError('Invalid SIWE issuedAt', 'SIWB_ISSUED_AT');
+      throw new DomainError('Invalid SIWE issuedAt', 'SIWE_ISSUED_AT');
     }
-    const skewMs = SIWB_ISSUED_AT_SKEW_SECONDS * 1000;
+    const skewMs = SIWE_ISSUED_AT_SKEW_SECONDS * 1000;
     if (parsed.issuedAt.getTime() > time.getTime() + skewMs) {
-      throw new DomainError('SIWE issuedAt is in the future', 'SIWB_ISSUED_AT');
+      throw new DomainError('SIWE issuedAt is in the future', 'SIWE_ISSUED_AT');
     }
     if (parsed.issuedAt.getTime() < time.getTime() - skewMs) {
-      throw new DomainError('SIWE issuedAt is too stale', 'SIWB_ISSUED_AT');
+      throw new DomainError('SIWE issuedAt is too stale', 'SIWE_ISSUED_AT');
     }
   }
 
@@ -181,21 +172,21 @@ export function assertSiwePresentationFields(
 }
 
 /**
- * Verify SIWB: parseSiweMessage field checks + viem verifySiweMessage
- * (ERC-6492 / smart-account compatible), then atomically consume nonce.
+ * Verify SIWE: parseSiweMessage field checks + viem verifySiweMessage,
+ * then atomically consume the nonce.
  * Invalid presentation/signature must not burn the nonce.
  */
-export async function verifySiwbLogin(
+export async function verifySiweLogin(
   repo: Repository,
   config: AppConfig,
-  input: SiwbVerifyInput,
-  opts?: { publicClient?: SiwbPublicClient; time?: Date },
+  input: SiweVerifyInput,
+  opts?: { publicClient?: SiwePublicClient; time?: Date },
 ): Promise<{ address: `0x${string}`; chainId: number }> {
   let address: `0x${string}`;
   try {
     address = getAddress(input.address) as `0x${string}`;
   } catch {
-    throw new DomainError('Invalid SIWB address', 'SIWB_ADDRESS');
+    throw new DomainError('Invalid SIWE address', 'SIWE_ADDRESS');
   }
 
   const time = opts?.time ?? new Date();
@@ -209,7 +200,7 @@ export async function verifySiwbLogin(
   {
     const store = await repo.getStore();
     assertNonceUsable(
-      store.nonces.find((n) => n.nonce === nonce && n.purpose === 'siwb'),
+      store.nonces.find((n) => n.nonce === nonce && n.purpose === 'siwe'),
       nonce,
     );
   }
@@ -224,11 +215,11 @@ export async function verifySiwbLogin(
     time,
   });
   if (!valid) {
-    throw new DomainError('Invalid SIWB signature', 'SIWB_SIGNATURE');
+    throw new DomainError('Invalid SIWE signature', 'SIWE_SIGNATURE');
   }
 
   await repo.withLock(async (store) => {
-    const record = store.nonces.find((n) => n.nonce === nonce && n.purpose === 'siwb');
+    const record = store.nonces.find((n) => n.nonce === nonce && n.purpose === 'siwe');
     assertNonceUsable(record, nonce);
     assertSiwePresentationFields(input.message, config, address, { time });
     record!.consumedAt = new Date().toISOString();

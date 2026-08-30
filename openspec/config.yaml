@@ -1,0 +1,41 @@
+schema: spec-driven
+
+context: |
+  Tech stack: TypeScript 5.8, Node.js >=20, Hono API, Vite/React web client.
+  Architecture: modular server under src/, Vite web app under web/, tests under tests/.
+  Product scope: KYA authentication MVP plus planned Juno catalog search extension.
+  Testing: Vitest unit/integration-capable tests; no E2E runner or coverage command detected.
+  Style: strict TypeScript, ESLint flat config, ES modules, repository docs in README.md and FLOW.md.
+
+strict_tdd: true
+
+testing:
+  runner: vitest
+  command: npm test
+  typecheck: npm run typecheck
+  lint: npm run lint
+  build: npm run build
+  coverage: unavailable
+  e2e: unavailable
+
+rules:
+  proposal:
+    - Keep scope focused and include rollback considerations for risky changes.
+  specs:
+    - Use Given/When/Then scenarios and RFC 2119 requirement keywords.
+    - Preserve the existing Juno technical spec as project context; do not duplicate it without a change delta.
+  design:
+    - Document boundary contracts, failure behavior, and rationale for architecture decisions.
+  tasks:
+    - Group tasks by implementation phase and keep each task independently verifiable.
+  apply:
+    guidelines:
+      - Follow existing TypeScript, Hono, Vitest, and repository documentation conventions.
+    tdd: true
+    test_command: npm test
+  verify:
+    test_command: npm test
+    build_command: npm run build
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive or behavior-changing deltas into main specs.
