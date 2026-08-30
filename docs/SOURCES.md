@@ -65,6 +65,6 @@ Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
 | BNB Chain BSC Testnet (chain 97) | https://docs.bnbchain.org/bnb-smart-chain/developers/wallet-configuration/ | Documented anchor network for mandate evidence (live writes out of scope for fake worker) |
 | Supabase Postgres RLS | https://supabase.com/docs/guides/database/postgres/row-level-security | `mandate_requests` / `mandate_policy_reservations` RLS + revoke from `anon`/`authenticated` |
 | Supabase Database Functions | https://supabase.com/docs/guides/database/functions | `create_mandate_request`, `reserve_mandate_policy` RPCs |
-| Supabase Migrations | https://supabase.com/docs/guides/deployment/database-migrations | `supabase/migrations/20260830_create_*.sql` then `20260830120000_upgrade_mandate_schema_v2.sql` |
+| Supabase Migrations | https://supabase.com/docs/guides/deployment/database-migrations | `supabase/migrations/20260830_create_*.sql` then `20260830235959_upgrade_mandate_schema_v2.sql` |
 
 Re-verify curated registry addresses and ABI before any live promotion.
