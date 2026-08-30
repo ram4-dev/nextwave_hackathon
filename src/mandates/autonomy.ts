@@ -5,7 +5,7 @@ import { DomainError } from '../domain/state-machine.js';
 import { assertTrustedAgent, type AgentTrustVerifier } from './agent-trust.js';
 import { canonicalJson, checkoutHash, freezeConstraints, openMandatePayload, openMandatePayloadHash, sha256Base64Url } from './canonical.js';
 import {
-  createSupabaseMandatePolicyLedger,
+  createPgMandatePolicyLedger,
   InMemoryMandatePolicyLedger,
   MandatePolicyEvaluator,
   type MandatePolicyLedger,
@@ -387,7 +387,7 @@ function resolvePolicyLedger(input: {
 }): MandatePolicyLedger {
   if (input.policyLedger) return input.policyLedger;
   if (input.registry.policyLedger) return input.registry.policyLedger;
-  if (process.env.NODE_ENV === 'production') return createSupabaseMandatePolicyLedger();
+  if (process.env.NODE_ENV === 'production') return createPgMandatePolicyLedger();
   throw new DomainError(
     'policyLedger is required when the registry does not expose a shared in-process ledger',
     'POLICY_LEDGER_REQUIRED',

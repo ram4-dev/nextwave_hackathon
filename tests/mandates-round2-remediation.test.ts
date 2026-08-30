@@ -13,7 +13,7 @@ import {
   InMemoryOpenMandateRegistry,
   JsonFileMandateReplayStore,
   KyaAgentTrustVerifier,
-  SupabaseMandatePolicyLedger,
+  PgMandatePolicyLedger,
   bindDraftIdToExactWindow,
   createLocalMerchantSigner,
   createMandateService,
@@ -261,13 +261,10 @@ describe('round 2: safe integer and policy reservation boundaries', () => {
     }
   });
 
-  it('keeps memory and Supabase adapters fail-closed and prevents artificial balance', async () => {
-    const single = vi.fn(async () => ({ data: { remaining_budget_minor: '90' }, error: null }));
-    const rpc = vi.fn(() => ({ single }));
+  it('keeps memory and Postgres adapters fail-closed and prevents artificial balance', async () => {
+    const query = vi.fn(async () => ({ rows: [{ remaining_budget_minor: '90' }] }));
     const memory = new InMemoryMandatePolicyLedger();
-    const remote = new SupabaseMandatePolicyLedger(
-      { rpc } as unknown as import('@supabase/supabase-js').SupabaseClient,
-    );
+    const remote = new PgMandatePolicyLedger({ query });
     const base: MandatePolicyReserveInput = {
       checkoutMandateId: 'checkout_1',
       paymentMandateId: 'payment_1',
@@ -301,12 +298,11 @@ describe('round 2: safe integer and policy reservation boundaries', () => {
       await expect(memory.reserve(input)).rejects.toMatchObject({ code: 'POLICY_INPUT' });
       await expect(remote.reserve(input)).rejects.toMatchObject({ code: 'POLICY_INPUT' });
     }
-    expect(rpc).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
 
     await expect(memory.reserve(base)).resolves.toEqual({ remainingBudgetMinor: 90 });
     await expect(remote.reserve(base)).resolves.toEqual({ remainingBudgetMinor: 90 });
-    expect(rpc).toHaveBeenCalledTimes(1);
-    expect(single).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(1);
   });
 });
 

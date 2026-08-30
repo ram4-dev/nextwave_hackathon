@@ -15,7 +15,7 @@
 - Trusted Surface EIP-712 (Base Sepolia/Base) con activación ligada al hash canónico.
 - **Atomicidad local in-memory:** `activateWithVerifiedSignature`, `revoke` y `persistProof` (p. ej. `approvalStore.consume`) comparten la sección crítica antes de confirmar el estado. Si la persistencia falla, el mandato permanece `awaiting_user_signature` y el challenge queda reintentable; una revocación resuelta nunca puede ser sobrescrita por una activación en vuelo.
 - **Pendiente durable:** registry + challenge/proof deben compartir una única transacción de base de datos en producción. No afirmar atomicidad durable inexistente.
-- Ledger de política in-memory compartido por `InMemoryOpenMandateRegistry.policyLedger` + migración Supabase con presupuesto/ops/frecuencia **por mandato**. La reserva devuelve `remainingBudgetMinor` desde la misma sección crítica/transacción que inserta, sin una lectura previa susceptible a carreras.
+- Ledger de política in-memory compartido por `InMemoryOpenMandateRegistry.policyLedger` + migración Postgres self-hosted con presupuesto/ops/frecuencia **por mandato**. La reserva devuelve `remainingBudgetMinor` desde la misma sección crítica/transacción que inserta, sin una lectura previa susceptible a carreras.
 - Contrato `MandateAnchor` (Hardhat) con roles admin/pauser/anchorer permanentemente excluyentes, también después de grants y rotaciones; pruebas locales; los seis hashes de evidencia deben ser no-cero.
 - Outbox hash-only + worker inyectable con `FakeMandateAnchorClient`; rechaza las representaciones hex y base64url canónicas de 32 bytes cero antes de enqueue/anchor, y mantiene estado `processing` + lease, `maxAttempts` y `txHash` persistido (sin RPC real).
 
@@ -33,15 +33,20 @@
 - Drafts CLI default fail-closed (el fixture estático futuro se rechaza): `NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json`
 - `MERCHANT_SIGNING_PRIVATE_JWK` opcional en development/test. Nunca usar una clave real en un fixture.
 
-## Migraciones Supabase
+## Migraciones del ledger de mandates (Postgres self-hosted)
 
-Ejecutá en orden:
+El policy ledger y el request store corren sobre Postgres propio (Docker local o cualquier
+Postgres gestionado), no sobre Supabase. Esquema en `migrations/mandates/001_mandate_schema.sql`,
+aplicado y trackeado (tabla `mandate_schema_migrations`) por `src/mandates/migrate.ts`.
 
-1. `supabase/migrations/20260830000100_create_mandate_policy_ledger.sql`
-2. `supabase/migrations/20260830000200_create_mandate_requests.sql`
-3. `supabase/migrations/20260830235959_upgrade_mandate_schema_v2.sql` (upgrade idempotente posterior a las create: elimina `prompt`, drop del RPC request viejo y del `reserve_mandate_policy` de 9 args, asegura CHECK exacto de `prompt_hash`, funciones/índices/grants/RLS nuevos)
+```
+npm run mandates:up       # levanta Postgres en Docker (puerto 55433)
+npm run mandates:migrate  # aplica migrations/mandates/*.sql via MANDATES_DATABASE_URL
+```
 
-Cada archivo usa un prefijo de versión numérico único (Supabase CLI).
+En producción, `resolvePolicyLedger` (`src/mandates/autonomy.ts`) instancia
+`createPgMandatePolicyLedger()` cuando `NODE_ENV=production`, leyendo `MANDATES_DATABASE_URL`.
+En dev/test se usa `InMemoryMandatePolicyLedger`.
 
 ## Tests
 

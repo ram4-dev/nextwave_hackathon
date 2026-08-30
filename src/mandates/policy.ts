@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import pg from 'pg';
 import { DomainError } from '../domain/state-machine.js';
 import type { CheckoutSnapshot } from './types.js';
 
@@ -197,31 +197,46 @@ export class InMemoryMandatePolicyLedger implements MandatePolicyLedger {
   }
 }
 
-/** Durable policy ledger backed by Supabase RPC transactions. */
-export class SupabaseMandatePolicyLedger implements MandatePolicyLedger {
-  constructor(private readonly client: SupabaseClient) {}
+/** Minimal shape this ledger needs from a `pg` pool/client — kept narrow so tests can fake it. */
+export interface MandatePolicyQueryable {
+  query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }>;
+}
+
+/** Durable policy ledger backed by the same reserve/release SQL functions, over plain Postgres. */
+export class PgMandatePolicyLedger implements MandatePolicyLedger {
+  constructor(private readonly client: MandatePolicyQueryable) {}
 
   async reserve(input: MandatePolicyReserveInput): Promise<MandatePolicyReservationResult> {
     assertReserveInput(input);
-    const { data, error } = await this.client.rpc('reserve_mandate_policy', {
-      p_checkout_mandate_id: input.checkoutMandateId,
-      p_payment_mandate_id: input.paymentMandateId,
-      p_transaction_id: input.transactionId,
-      p_amount_minor: input.amountMinor,
-      p_reserved_at: input.now.toISOString(),
-      p_checkout_total_budget_minor: input.checkoutConstraints.totalBudgetMinor,
-      p_checkout_max_operations: input.checkoutConstraints.maxOperations,
-      p_checkout_frequency_window_seconds: input.checkoutConstraints.frequencyWindowSeconds,
-      p_checkout_max_operations_per_window: input.checkoutConstraints.maxOperationsPerWindow,
-      p_payment_total_budget_minor: input.paymentConstraints.totalBudgetMinor,
-      p_payment_max_operations: input.paymentConstraints.maxOperations,
-      p_payment_frequency_window_seconds: input.paymentConstraints.frequencyWindowSeconds,
-      p_payment_max_operations_per_window: input.paymentConstraints.maxOperationsPerWindow,
-    }).single();
-    if (error || !data) {
-      throw new DomainError(`Policy reservation rejected: ${error?.message ?? 'empty result'}`, 'POLICY_RESERVATION');
+    let rows: unknown[];
+    try {
+      const result = await this.client.query(
+        `select remaining_budget_minor from reserve_mandate_policy($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [
+          input.checkoutMandateId,
+          input.paymentMandateId,
+          input.transactionId,
+          input.amountMinor,
+          input.now.toISOString(),
+          input.checkoutConstraints.totalBudgetMinor,
+          input.checkoutConstraints.maxOperations,
+          input.checkoutConstraints.frequencyWindowSeconds,
+          input.checkoutConstraints.maxOperationsPerWindow,
+          input.paymentConstraints.totalBudgetMinor,
+          input.paymentConstraints.maxOperations,
+          input.paymentConstraints.frequencyWindowSeconds,
+          input.paymentConstraints.maxOperationsPerWindow,
+        ],
+      );
+      rows = result.rows;
+    } catch (error) {
+      throw new DomainError(`Policy reservation rejected: ${(error as Error).message}`, 'POLICY_RESERVATION');
     }
-    const remainingBudgetMinor = Number((data as { remaining_budget_minor?: number | string }).remaining_budget_minor);
+    const row = rows[0] as { remaining_budget_minor?: number | string } | undefined;
+    if (!row) {
+      throw new DomainError('Policy reservation rejected: empty result', 'POLICY_RESERVATION');
+    }
+    const remainingBudgetMinor = Number(row.remaining_budget_minor);
     if (!Number.isSafeInteger(remainingBudgetMinor) || remainingBudgetMinor < 0) {
       throw new DomainError('Policy reservation returned invalid remaining budget', 'POLICY_RESERVATION');
     }
@@ -229,20 +244,20 @@ export class SupabaseMandatePolicyLedger implements MandatePolicyLedger {
   }
 
   async release(transactionId: string): Promise<void> {
-    const { error } = await this.client.rpc('release_mandate_policy_reservation', {
-      p_transaction_id: transactionId,
-    });
-    if (error) throw new DomainError(`Policy reservation release failed: ${error.message}`, 'POLICY_RESERVATION');
+    try {
+      await this.client.query('select release_mandate_policy_reservation($1)', [transactionId]);
+    } catch (error) {
+      throw new DomainError(`Policy reservation release failed: ${(error as Error).message}`, 'POLICY_RESERVATION');
+    }
   }
 }
 
-export function createSupabaseMandatePolicyLedger(env: NodeJS.ProcessEnv = process.env): SupabaseMandatePolicyLedger {
-  const url = env.SUPABASE_URL;
-  const secretKey = env.SUPABASE_SECRET_KEY;
-  if (!url || !secretKey || url.includes('<') || secretKey.includes('<')) {
-    throw new DomainError('SUPABASE_URL and SUPABASE_SECRET_KEY must be configured', 'SUPABASE_CONFIG');
+export function createPgMandatePolicyLedger(env: NodeJS.ProcessEnv = process.env): PgMandatePolicyLedger {
+  const url = env.MANDATES_DATABASE_URL;
+  if (!url || url.includes('<')) {
+    throw new DomainError('MANDATES_DATABASE_URL must be configured', 'MANDATES_DATABASE_CONFIG');
   }
-  return new SupabaseMandatePolicyLedger(createClient(url, secretKey, { auth: { persistSession: false, autoRefreshToken: false } }));
+  return new PgMandatePolicyLedger(new pg.Pool({ connectionString: url }));
 }
 
 export class MandatePolicyEvaluator {

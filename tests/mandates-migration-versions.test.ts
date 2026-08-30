@@ -1,12 +1,12 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-describe('supabase migration version uniqueness', () => {
-  it('requires unique numeric version prefixes for every migration file', async () => {
-    const dir = path.join(process.cwd(), 'supabase/migrations');
+describe('mandate migration version uniqueness', () => {
+  it('requires unique numeric version prefixes for every migration file, covering both tables', async () => {
+    const dir = path.join(process.cwd(), 'migrations/mandates');
     const files = (await readdir(dir)).filter((name) => name.endsWith('.sql')).sort();
-    expect(files.length).toBeGreaterThanOrEqual(3);
+    expect(files.length).toBeGreaterThanOrEqual(1);
 
     const versions = files.map((name) => {
       const match = name.match(/^(\d+)_/);
@@ -23,8 +23,10 @@ describe('supabase migration version uniqueness', () => {
     });
     expect(versions).toEqual(ordered);
 
-    expect(files.some((name) => name.includes('create_mandate_policy_ledger'))).toBe(true);
-    expect(files.some((name) => name.includes('create_mandate_requests'))).toBe(true);
-    expect(files.at(-1)).toBe('20260830235959_upgrade_mandate_schema_v2.sql');
+    const combined = (
+      await Promise.all(files.map((name) => readFile(path.join(dir, name), 'utf8')))
+    ).join('\n');
+    expect(combined).toContain('mandate_policy_reservations');
+    expect(combined).toContain('mandate_requests');
   });
 });

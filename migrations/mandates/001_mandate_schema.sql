@@ -1,64 +1,62 @@
--- Safe upgrade from the original 20260830 mandate migrations to the remediations schema.
--- Idempotent on fresh installs that already have the remediated shape.
+-- Mandate policy ledger + mandate request store, on plain self-hosted Postgres.
+--
+-- This consolidates what used to be three sequential Supabase migrations
+-- (create_mandate_policy_ledger, create_mandate_requests, upgrade_mandate_schema_v2)
+-- into the single final shape, since a fresh local database has no legacy rows to
+-- carry forward. Behavior (constraints, RPC signatures, advisory-lock ordering) is
+-- unchanged from the Supabase version.
+--
+-- Supabase-specific plumbing intentionally dropped: `enable row level security` and
+-- `grant/revoke ... anon, authenticated, service_role` existed only to fence off the
+-- PostgREST anon/authenticated roles that Supabase exposes. Outside Supabase there is
+-- no PostgREST layer and the app connects as a single owning role, so that plumbing
+-- was a no-op waiting to become a footgun (RLS with zero policies denies everyone,
+-- including the app, the moment the app role stops owning the tables).
 
--- 1) Request store: add encrypted ref, drop plaintext prompt irrevocably, replace RPC by signature.
-alter table if exists public.mandate_requests
-  add column if not exists encrypted_prompt_ref text;
+create table if not exists mandate_policy_reservations (
+  transaction_id text primary key,
+  checkout_mandate_id text not null,
+  payment_mandate_id text not null,
+  amount_minor bigint not null constraint mandate_policy_reservations_amount_safe_chk
+    check (amount_minor between 0 and 9007199254740991),
+  reserved_at timestamptz not null,
+  released_at timestamptz,
+  created_at timestamptz not null default now()
+);
 
-do $$
-begin
-  if exists (
-    select 1
-    from pg_attribute
-    where attrelid = to_regclass('public.mandate_requests')
-      and attname = 'prompt'
-      and not attisdropped
-  ) then
-    alter table public.mandate_requests drop column prompt cascade;
-  end if;
-end $$;
+create index if not exists mandate_policy_reservations_checkout_idx
+  on mandate_policy_reservations (checkout_mandate_id, reserved_at)
+  where released_at is null;
 
--- Drop legacy create_mandate_request(p_prompt text, ...) if present (old 7-arg with plaintext).
-drop function if exists public.create_mandate_request(text, text, text, text, text, text, timestamptz);
+create index if not exists mandate_policy_reservations_payment_idx
+  on mandate_policy_reservations (payment_mandate_id, reserved_at)
+  where released_at is null;
 
--- Ensure prompt_hash cannot hold plaintext (exact SHA-256 base64url).
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint c
-    where c.conname = 'mandate_requests_prompt_hash_sha256_chk'
-      and c.conrelid = to_regclass('public.mandate_requests')
-  ) then
-    alter table public.mandate_requests
-      add constraint mandate_requests_prompt_hash_sha256_chk
-      check (prompt_hash ~ '^[A-Za-z0-9_-]{43}$');
-  end if;
-exception when undefined_table then null;
-end $$;
+create table if not exists mandate_requests (
+  id text primary key,
+  transaction_id text not null unique,
+  agent_id text not null,
+  tenant_id text not null,
+  prompt_hash text not null,
+  encrypted_prompt_ref text,
+  received_at timestamptz not null,
+  status text not null default 'received' check (status = 'received'),
+  created_at timestamptz not null default now(),
+  constraint mandate_requests_prompt_hash_sha256_chk
+    check (prompt_hash ~ '^[A-Za-z0-9_-]{43}$'),
+  constraint mandate_requests_encrypted_prompt_ref_chk
+    check (
+      encrypted_prompt_ref is null
+      or (
+        encrypted_prompt_ref ~ '^[-A-Za-z0-9._:]+$'
+        and char_length(encrypted_prompt_ref) <= 512
+      )
+    )
+);
 
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint c
-    where c.conname = 'mandate_requests_encrypted_prompt_ref_chk'
-      and c.conrelid = to_regclass('public.mandate_requests')
-  ) then
-    alter table public.mandate_requests
-      add constraint mandate_requests_encrypted_prompt_ref_chk
-      check (
-        encrypted_prompt_ref is null
-        or (
-          encrypted_prompt_ref ~ '^[-A-Za-z0-9._:]+$'
-          and char_length(encrypted_prompt_ref) <= 512
-        )
-      );
-  end if;
-exception when undefined_table then null;
-end $$;
+-- Plaintext prompt column is intentionally absent. Only prompt_hash (+ optional opaque ref) is stored.
 
-create or replace function public.create_mandate_request(
+create or replace function create_mandate_request(
   p_id text,
   p_transaction_id text,
   p_agent_id text,
@@ -66,13 +64,13 @@ create or replace function public.create_mandate_request(
   p_prompt_hash text,
   p_encrypted_prompt_ref text,
   p_received_at timestamptz
-) returns public.mandate_requests
+) returns mandate_requests
 language plpgsql
 security invoker
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
-  row public.mandate_requests;
+  row mandate_requests;
 begin
   if p_prompt_hash is null or p_prompt_hash !~ '^[A-Za-z0-9_-]{43}$' then
     raise exception 'PROMPT_HASH_INVALID';
@@ -83,7 +81,7 @@ begin
   ) then
     raise exception 'ENCRYPTED_PROMPT_REF_INVALID';
   end if;
-  insert into public.mandate_requests (
+  insert into mandate_requests (
     id, transaction_id, agent_id, tenant_id, prompt_hash, encrypted_prompt_ref, received_at
   ) values (
     p_id, p_transaction_id, p_agent_id, p_tenant_id, p_prompt_hash, p_encrypted_prompt_ref, p_received_at
@@ -92,42 +90,7 @@ begin
 end;
 $$;
 
-revoke all on function public.create_mandate_request(text, text, text, text, text, text, timestamptz) from public;
-do $$ begin
-  revoke all on function public.create_mandate_request(text, text, text, text, text, text, timestamptz) from anon, authenticated;
-exception when undefined_object then null;
-end $$;
-do $$ begin
-  grant execute on function public.create_mandate_request(text, text, text, text, text, text, timestamptz) to service_role;
-exception when undefined_object then null;
-end $$;
-
--- 2) Policy ledger: drop legacy 9-arg pair-scoped reserve, ensure per-mandate function + indexes.
-drop function if exists public.reserve_mandate_policy(
-  text, text, text, bigint, timestamptz, bigint, integer, integer, integer
-);
-
-drop function if exists public.reserve_mandate_policy(
-  text, text, text, bigint, timestamptz,
-  bigint, integer, integer, integer,
-  bigint, integer, integer, integer
-);
-
-create index if not exists mandate_policy_reservations_checkout_idx
-  on public.mandate_policy_reservations (checkout_mandate_id, reserved_at)
-  where released_at is null;
-
-create index if not exists mandate_policy_reservations_payment_idx
-  on public.mandate_policy_reservations (payment_mandate_id, reserved_at)
-  where released_at is null;
-
-alter table if exists public.mandate_policy_reservations
-  drop constraint if exists mandate_policy_reservations_amount_safe_chk;
-alter table if exists public.mandate_policy_reservations
-  add constraint mandate_policy_reservations_amount_safe_chk
-  check (amount_minor between 0 and 9007199254740991);
-
-create or replace function public.reserve_mandate_policy(
+create or replace function reserve_mandate_policy(
   p_checkout_mandate_id text,
   p_payment_mandate_id text,
   p_transaction_id text,
@@ -144,7 +107,7 @@ create or replace function public.reserve_mandate_policy(
 ) returns table(remaining_budget_minor bigint)
 language plpgsql
 security invoker
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   checkout_total numeric;
@@ -175,6 +138,7 @@ begin
     raise exception 'POLICY_INPUT_INVALID';
   end if;
 
+  -- Deterministic lock ordering across mandate ids prevents deadlocks.
   if p_checkout_mandate_id < p_payment_mandate_id then
     lock_a := p_checkout_mandate_id;
     lock_b := p_payment_mandate_id;
@@ -185,13 +149,13 @@ begin
   perform pg_advisory_xact_lock(hashtext(lock_a));
   perform pg_advisory_xact_lock(hashtext(lock_b));
 
-  if exists (select 1 from public.mandate_policy_reservations where transaction_id = p_transaction_id) then
+  if exists (select 1 from mandate_policy_reservations where transaction_id = p_transaction_id) then
     raise exception 'MANDATE_IDEMPOTENCY';
   end if;
 
   select coalesce(sum(amount_minor), 0), count(*)
   into checkout_total, checkout_operations
-  from public.mandate_policy_reservations
+  from mandate_policy_reservations
   where checkout_mandate_id = p_checkout_mandate_id
     and released_at is null;
 
@@ -199,7 +163,7 @@ begin
   if checkout_operations >= p_checkout_max_operations then raise exception 'POLICY_OPERATIONS'; end if;
 
   select count(*) into checkout_window_operations
-  from public.mandate_policy_reservations
+  from mandate_policy_reservations
   where checkout_mandate_id = p_checkout_mandate_id
     and released_at is null
     and reserved_at >= p_reserved_at - make_interval(secs => p_checkout_frequency_window_seconds);
@@ -208,7 +172,7 @@ begin
 
   select coalesce(sum(amount_minor), 0), count(*)
   into payment_total, payment_operations
-  from public.mandate_policy_reservations
+  from mandate_policy_reservations
   where payment_mandate_id = p_payment_mandate_id
     and released_at is null;
 
@@ -216,14 +180,14 @@ begin
   if payment_operations >= p_payment_max_operations then raise exception 'POLICY_OPERATIONS'; end if;
 
   select count(*) into payment_window_operations
-  from public.mandate_policy_reservations
+  from mandate_policy_reservations
   where payment_mandate_id = p_payment_mandate_id
     and released_at is null
     and reserved_at >= p_reserved_at - make_interval(secs => p_payment_frequency_window_seconds);
 
   if payment_window_operations >= p_payment_max_operations_per_window then raise exception 'POLICY_FREQUENCY'; end if;
 
-  insert into public.mandate_policy_reservations (
+  insert into mandate_policy_reservations (
     transaction_id, checkout_mandate_id, payment_mandate_id, amount_minor, reserved_at
   ) values (
     p_transaction_id, p_checkout_mandate_id, p_payment_mandate_id, p_amount_minor, p_reserved_at
@@ -235,8 +199,8 @@ begin
 end;
 $$;
 
-create or replace function public.release_mandate_policy_reservation(p_transaction_id text)
-returns void language plpgsql security invoker set search_path = public as $$
+create or replace function release_mandate_policy_reservation(p_transaction_id text)
+returns void language plpgsql security invoker set search_path = pg_catalog, public as $$
 declare
   checkout_id text;
   payment_id text;
@@ -245,7 +209,7 @@ declare
 begin
   select checkout_mandate_id, payment_mandate_id
   into checkout_id, payment_id
-  from public.mandate_policy_reservations
+  from mandate_policy_reservations
   where transaction_id = p_transaction_id and released_at is null;
   if not found then return; end if;
 
@@ -259,47 +223,8 @@ begin
   perform pg_advisory_xact_lock(hashtext(lock_a));
   perform pg_advisory_xact_lock(hashtext(lock_b));
 
-  update public.mandate_policy_reservations
+  update mandate_policy_reservations
   set released_at = now()
   where transaction_id = p_transaction_id and released_at is null;
 end;
 $$;
-
-revoke all on function public.reserve_mandate_policy(
-  text, text, text, bigint, timestamptz,
-  bigint, integer, integer, integer,
-  bigint, integer, integer, integer
-) from public;
-do $$ begin
-  revoke all on function public.reserve_mandate_policy(
-    text, text, text, bigint, timestamptz,
-    bigint, integer, integer, integer,
-    bigint, integer, integer, integer
-  ) from anon, authenticated;
-exception when undefined_object then null;
-end $$;
-do $$ begin
-  grant execute on function public.reserve_mandate_policy(
-    text, text, text, bigint, timestamptz,
-    bigint, integer, integer, integer,
-    bigint, integer, integer, integer
-  ) to service_role;
-exception when undefined_object then null;
-end $$;
-revoke all on function public.release_mandate_policy_reservation(text) from public;
-do $$ begin
-  revoke all on function public.release_mandate_policy_reservation(text) from anon, authenticated;
-exception when undefined_object then null;
-end $$;
-do $$ begin
-  grant execute on function public.release_mandate_policy_reservation(text) to service_role;
-exception when undefined_object then null;
-end $$;
-
-alter table if exists public.mandate_requests enable row level security;
-alter table if exists public.mandate_policy_reservations enable row level security;
-do $$ begin
-  revoke all on table public.mandate_requests from anon, authenticated;
-  revoke all on table public.mandate_policy_reservations from anon, authenticated;
-exception when undefined_object then null;
-end $$;
