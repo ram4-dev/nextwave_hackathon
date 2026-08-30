@@ -313,6 +313,7 @@ function deriveProposal(){
     ['Category','flight',mine.length+' of your last '+mine.length+' agent purchases'],
     ['Route','BUE → COR','every flight you have booked'],
     ['Maximum',money(ceiling),'the most you ever paid is '+money(highest)],
+    ['Currency','USD','all matching purchases were settled in USD'],
     ['Purchases','1','you book one leg at a time'],
     ['Valid until','Aug 31','30 days, renewable'],
     ['Payment method','Visa ••4242','used in '+mine.length+' of '+mine.length]
@@ -790,6 +791,7 @@ function vMandateDetail(){
   <div class="grid2">
     <div class="card pad"><p class="lbl">Constraints</p>
       <div class="row"><span class="k">Maximum total</span><span class="v mono">${money(cc.max_total_amount)}</span></div>
+      <div class="row"><span class="k">Currency</span><span class="v mono">${cc.currency}</span></div>
       <div class="row"><span class="k">Transactions</span><span class="v mono">${m.used} / ${cc.max_transactions}</span></div>
       <div class="row"><span class="k">Valid until</span><span class="v">${cc.valid_until}</span></div>
       <div class="row"><span class="k">Outside scope</span><span class="v">${m.claims.outside_scope_action}</span></div></div>
