@@ -1,6 +1,7 @@
 # Sources & provenance
 
-Retrieval date for all entries: **2026-08-29**. Marked **generated/demo** where data is synthetic.
+Retrieval date for existing entries: **2026-08-29**. ACP entries were retrieved
+**2026-08-30**. Marked **generated/demo** where data is synthetic.
 
 | Topic | Authoritative URL / value | What depends on it |
 | --- | --- | --- |
@@ -48,6 +49,14 @@ Retrieval date for all entries: **2026-08-29**. Marked **generated/demo** where 
 | Veriff create-session HMAC | https://devdocs.veriff.com/v1/docs/hmac-authentication-and-endpoint-security (2026-08-29): **POST /v1/sessions is the exception — no X-HMAC-SIGNATURE**; webhooks use `x-hmac-signature` only | `kyc/veriff.ts` |
 | SIWE verify | viem `parseSiweMessage` + `verifySiweMessage` | `src/auth/siwe.ts` |
 | Browser-wallet migration rationale | https://github.com/base/account-sdk/issues/363 | Historical evidence for replacing the former provider-specific Base Sepolia path; `BROWSER_WALLET_MIGRATION_SPEC.md` |
+| PostgreSQL index types and maintenance | https://www.postgresql.org/docs/current/indexes.html | PostgreSQL updates indexes when indexed table rows change; HNSW/GIN/B-tree in `migrations/001_juno_catalog.sql` |
+| ACP API overview | https://developers.openai.com/commerce/specs/api/overview | Feeds/Products/Promotions surfaces; common auth, idempotency, tracing, timestamp and version headers |
+| ACP Feeds | https://developers.openai.com/commerce/specs/api/feeds | Target `POST /product_feeds` and `GET /product_feeds/{id}` contracts |
+| ACP Products | https://developers.openai.com/commerce/specs/api/products | Target GET/PATCH products contract, partial upsert by product ID, variants, minor-unit price and availability |
+| pgvector 0.8.1 on PostgreSQL 16 | https://github.com/pgvector/pgvector · image `pgvector/pgvector:0.8.1-pg16` (local harness pin; `>= 0.8` floor; `0.8.6-pg16` pull was unreliable) | Same-database `vector(384)`, cosine `<=>`, HNSW, iterative scans, hybrid lexical search |
+| Local embedding runtime and multilingual model | https://huggingface.co/docs/transformers.js · https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2 | `TransformersEmbeddingProvider`: local 384-d Spanish query/document embeddings; no embedding API egress |
+| `pg` client | https://node-postgres.com/ | `PostgresCatalogRepository`, parameterized SQL |
+| `@huggingface/transformers` feature extraction | https://github.com/huggingface/transformers.js | Local `pipeline('feature-extraction')`; preferred model `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384-d). Query text stays in-process. |
 | Credential short TTL default | 900s (product security rule) | `CREDENTIAL_TTL_SECONDS` |
 | Platform signing private key | Live: `KYA_SIGNING_PRIVATE_JWK` or `KYA_SIGNING_KEY_FILE` (secret-backed). Demo: process-local ephemeral. Never persist `d`/`privateJwk` in store.json | `credentials/signer.ts`, `JsonFileRepository` scrub |
 

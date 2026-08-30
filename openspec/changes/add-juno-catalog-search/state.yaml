@@ -1,0 +1,51 @@
+change: add-juno-catalog-search
+artifact_mode: openspec
+delivery_strategy: ask-on-risk
+status: verified_pending_archive
+
+phases:
+  init: complete
+  explore: complete
+  propose: complete
+  spec: complete
+  design: complete
+  tasks: complete
+  apply: complete
+  verify: complete
+
+verification:
+  latest_report: pass_with_warnings
+  post_verify_corrections: complete
+  next_recommended_phase: archive
+
+review_gate:
+  required_before_apply: true
+  approved: true
+
+source_context:
+  - docs/JUNO_CATALOG_SEARCH_SPEC.md
+  - FLOW.md
+  - README.md
+
+product_decisions:
+  fixture_offers: 10
+  market: Argentina
+  currency: ARS
+  language: Spanish
+  continuation_url: out_of_scope
+  vector_payload:
+    - item_id
+    - name
+    - description
+    - item_info
+    - embedding
+  hard_data_hydration: sql_by_item_id
+
+apply_decisions:
+  chain_strategy: feature-branch-chain
+  embedding_runtime: local_multilingual_384
+  embedding_query_egress: disabled
+  postgres_client: pg
+  migrations: sql_files
+  provisioning: docker_pgvector
+  hnsw_fallback: explicit_readiness_only
