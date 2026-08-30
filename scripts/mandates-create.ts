@@ -22,8 +22,11 @@ export async function createMandatesFromFile(
   env: NodeJS.ProcessEnv = process.env,
   options: { replayStorePath?: string } = {},
 ) {
+  const nodeEnv = env.NODE_ENV;
+  if (nodeEnv !== 'development' && nodeEnv !== 'test') {
+    throw new Error('mandates:create requires NODE_ENV=development or NODE_ENV=test (fail-closed; no implicit default)');
+  }
   const input = JSON.parse(await readFile(filePath, 'utf8')) as CliInput;
-  const nodeEnv = env.NODE_ENV ?? 'development';
   const rawKey = env.MERCHANT_SIGNING_PRIVATE_JWK;
   const privateJwk = rawKey ? JSON.parse(rawKey) as JsonWebKey : undefined;
   const signer = await createLocalMerchantSigner({ issuer: input.merchant.id, privateJwk, nodeEnv });
@@ -58,7 +61,7 @@ function safeOutput(result: Awaited<ReturnType<typeof createMandatesFromFile>>, 
 async function main() {
   const [command, flag, inputPath] = process.argv.slice(2);
   if (command !== 'mandates:create' || flag !== '--input' || !inputPath) {
-    throw new Error('Usage: npm run mandates:create -- --input ./fixtures/validated-checkout.json');
+    throw new Error('Usage: NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json');
   }
   const result = await createMandatesFromFile(inputPath);
   const canShowFull = (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') && process.env.MANDATES_ALLOW_FULL_OUTPUT === 'true';

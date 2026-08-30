@@ -6,20 +6,20 @@ const audience = 'ap2.checkout';
 const allowedLocalEnvs = new Set(['development', 'test']);
 
 function resolveNodeEnv(explicit?: string): string {
-  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+  if (explicit !== undefined) return explicit;
   return process.env.NODE_ENV ?? '';
 }
 
 export async function createLocalMerchantSigner(input: {
   privateJwk?: JsonWebKey;
   issuer: string;
-  /** Explicit environment override. When omitted, process.env.NODE_ENV is required and must be development/test. */
+  /** Explicit environment override. When omitted, process.env.NODE_ENV must be set to development/test. */
   nodeEnv?: string;
 }): Promise<MerchantSigner> {
   const nodeEnv = resolveNodeEnv(input.nodeEnv);
   if (!allowedLocalEnvs.has(nodeEnv)) {
     throw new DomainError(
-      'Local merchant signer is unavailable outside development/test (set nodeEnv explicitly or NODE_ENV)',
+      'Local merchant signer requires an explicit development/test environment (nodeEnv or NODE_ENV)',
       'MERCHANT_SIGNER_ENV',
     );
   }
@@ -40,12 +40,17 @@ export async function createLocalMerchantSigner(input: {
   return {
     issuer: input.issuer,
     async signCheckout(payload) {
+      const iat = Math.floor(Date.parse(payload.issuedAt) / 1000);
+      const exp = Math.floor(Date.parse(payload.expiresAt) / 1000);
+      if (!Number.isFinite(iat) || !Number.isFinite(exp) || exp <= iat) {
+        throw new DomainError('Checkout issuedAt/expiresAt produce invalid JWT iat/exp', 'CHECKOUT_JWT');
+      }
       return new SignJWT(payload as unknown as Record<string, unknown>)
         .setProtectedHeader({ alg: 'ES256', kid, typ: 'JWT' })
         .setIssuer(input.issuer)
         .setAudience(audience)
-        .setIssuedAt(Math.floor(Date.parse(payload.issuedAt) / 1000))
-        .setExpirationTime(Math.floor(Date.parse(payload.expiresAt) / 1000))
+        .setIssuedAt(iat)
+        .setExpirationTime(exp)
         .sign(privateKey);
     },
     async verifyCheckout(jwt) {
@@ -67,7 +72,17 @@ export async function createLocalMerchantSigner(input: {
         if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number' || payload.exp <= payload.iat) {
           throw new Error('Unexpected JWT iat/exp');
         }
-        return payload as unknown as CheckoutSnapshot;
+        const snapshot = payload as unknown as CheckoutSnapshot;
+        if (typeof snapshot.issuedAt !== 'string' || typeof snapshot.expiresAt !== 'string') {
+          throw new Error('Checkout issuedAt/expiresAt missing');
+        }
+        const expectedIat = Math.floor(Date.parse(snapshot.issuedAt) / 1000);
+        const expectedExp = Math.floor(Date.parse(snapshot.expiresAt) / 1000);
+        if (payload.iat !== expectedIat || payload.exp !== expectedExp) {
+          throw new Error('JWT iat/exp diverge from checkout issuedAt/expiresAt');
+        }
+        if (expectedExp * 1000 <= Date.now()) throw new Error('Checkout JWT expired by schema timestamps');
+        return snapshot;
       } catch (error) {
         throw new DomainError(`Checkout JWT verification failed: ${(error as Error).message}`, 'CHECKOUT_JWT');
       }
