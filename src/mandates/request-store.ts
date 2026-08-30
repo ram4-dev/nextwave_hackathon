@@ -4,8 +4,14 @@ import { z } from 'zod';
 import { DomainError } from '../domain/state-machine.js';
 
 const opaqueId = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/, 'Opaque identifier required');
+/** Shared contract with SQL CHECK: opaque ref up to 512 chars. */
+export const ENCRYPTED_PROMPT_REF_MAX = 512;
+export const encryptedPromptRefSchema = z
+  .string()
+  .min(1)
+  .max(ENCRYPTED_PROMPT_REF_MAX)
+  .regex(/^[-A-Za-z0-9._:]+$/, 'Opaque encrypted prompt reference required');
 const promptHashSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'promptHash must be SHA-256 base64url (43 chars)');
-const encryptedPromptRefSchema = opaqueId.max(512);
 
 const requestSchema = z.object({
   requestId: opaqueId.optional(),

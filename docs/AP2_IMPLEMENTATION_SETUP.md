@@ -13,11 +13,11 @@
 
 - Biblioteca de dominio AP2 en `src/mandates` con validación Zod estricta.
 - Trusted Surface EIP-712 (Base Sepolia/Base) con activación ligada al hash canónico.
-- **Atomicidad local in-memory:** `activateWithVerifiedSignature` ejecuta `persistProof` (p. ej. `approvalStore.consume`) dentro de la sección crítica antes de marcar `active`. Si la persistencia falla, el mandato permanece `awaiting_user_signature` y el challenge queda reintentable.
+- **Atomicidad local in-memory:** `activateWithVerifiedSignature`, `revoke` y `persistProof` (p. ej. `approvalStore.consume`) comparten la sección crítica antes de confirmar el estado. Si la persistencia falla, el mandato permanece `awaiting_user_signature` y el challenge queda reintentable; una revocación resuelta nunca puede ser sobrescrita por una activación en vuelo.
 - **Pendiente durable:** registry + challenge/proof deben compartir una única transacción de base de datos en producción. No afirmar atomicidad durable inexistente.
-- Ledger de política in-memory compartido por `InMemoryOpenMandateRegistry.policyLedger` + migración Supabase con presupuesto/ops/frecuencia **por mandato**.
-- Contrato `MandateAnchor` (Hardhat) con roles distintos admin/pauser/anchorer; pruebas locales; todos los hashes de evidencia deben ser no-cero.
-- Outbox hash-only + worker inyectable con `FakeMandateAnchorClient`, estado `processing` + lease, `maxAttempts` y `txHash` persistido (sin RPC real).
+- Ledger de política in-memory compartido por `InMemoryOpenMandateRegistry.policyLedger` + migración Supabase con presupuesto/ops/frecuencia **por mandato**. La reserva devuelve `remainingBudgetMinor` desde la misma sección crítica/transacción que inserta, sin una lectura previa susceptible a carreras.
+- Contrato `MandateAnchor` (Hardhat) con roles admin/pauser/anchorer permanentemente excluyentes, también después de grants y rotaciones; pruebas locales; los seis hashes de evidencia deben ser no-cero.
+- Outbox hash-only + worker inyectable con `FakeMandateAnchorClient`; rechaza las representaciones hex y base64url canónicas de 32 bytes cero antes de enqueue/anchor, y mantiene estado `processing` + lease, `maxAttempts` y `txHash` persistido (sin RPC real).
 
 ## Pendiente / fuera de alcance operativo
 
@@ -30,7 +30,7 @@
 
 - Node.js 20 o superior.
 - `KYA_MODE=demo` para trabajar sin KYC, pagos ni blockchain real.
-- Drafts CLI (fail-closed): `NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json`
+- Drafts CLI default fail-closed (el fixture estático futuro se rechaza): `NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json`
 - `MERCHANT_SIGNING_PRIVATE_JWK` opcional en development/test. Nunca usar una clave real en un fixture.
 
 ## Migraciones Supabase
@@ -47,7 +47,8 @@ Cada archivo usa un prefijo de versión numérico único (Supabase CLI).
 
 - `npm test` — suite hermética (sin Postgres de mandatos).
 - Integración Postgres de mandatos (opt-in): `MANDATE_TEST_DATABASE_URL=postgres://catalog:catalog@127.0.0.1:55432/juno_catalog npm run test:mandates:postgres`
-- Drafts CLI: `NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json` (el CLI materializa ventanas relativas al reloj real; no confía en timestamps absolutos de demo como 2030).
+- Drafts CLI (default preserve timestamps): `NODE_ENV=test npm run mandates:create -- --input ./path.json`
+- Bundled static demo fixture only: `NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json --materialize-demo-clock`
 
 ## Trusted Surface EIP-712
 

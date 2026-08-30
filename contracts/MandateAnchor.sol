@@ -9,6 +9,8 @@ contract MandateAnchor is AccessControl, Pausable {
     bytes32 public constant ANCHORER_ROLE = keccak256("ANCHORER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
+    error RoleSeparationViolation(address account, bytes32 requestedRole);
+
     mapping(bytes32 => bool) private anchored;
 
     event MandateAnchored(
@@ -28,6 +30,22 @@ contract MandateAnchor is AccessControl, Pausable {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(PAUSER_ROLE, pauser);
         _grantRole(ANCHORER_ROLE, anchorer);
+    }
+
+    /// @dev The three operational roles remain mutually exclusive after deployment,
+    /// including grants performed by newly rotated DEFAULT_ADMIN_ROLE accounts.
+    function _grantRole(bytes32 role, address account) internal override returns (bool) {
+        if (!hasRole(role, account)) {
+            bool conflicts = role == DEFAULT_ADMIN_ROLE
+                ? hasRole(PAUSER_ROLE, account) || hasRole(ANCHORER_ROLE, account)
+                : role == PAUSER_ROLE
+                    ? hasRole(DEFAULT_ADMIN_ROLE, account) || hasRole(ANCHORER_ROLE, account)
+                    : role == ANCHORER_ROLE
+                        ? hasRole(DEFAULT_ADMIN_ROLE, account) || hasRole(PAUSER_ROLE, account)
+                        : false;
+            if (conflicts) revert RoleSeparationViolation(account, role);
+        }
+        return super._grantRole(role, account);
     }
 
     function anchor(

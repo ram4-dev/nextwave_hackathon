@@ -49,6 +49,7 @@ export async function createTestAgentMandateSigner(nodeEnv: string): Promise<Age
 
 const opaqueId = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/);
 const utcDate = z.string().datetime({ offset: true }).refine((value) => value.endsWith('Z'));
+const sqlPositiveInteger = z.number().int().safe().positive().max(2_147_483_647);
 const publicJwkSchema = z.object({
   kty: z.literal('EC'),
   crv: z.literal('P-256'),
@@ -66,19 +67,22 @@ const constraintsSchema = z.object({
   payeeIds: z.array(opaqueId).min(1),
   productIds: z.array(opaqueId).optional(),
   supplierIds: z.array(opaqueId).optional(),
-  maxQuantityPerProduct: z.number().int().positive().finite(),
-  minAmountMinor: z.number().int().nonnegative().finite(),
-  maxAmountMinor: z.number().int().positive().finite(),
+  maxQuantityPerProduct: sqlPositiveInteger,
+  minAmountMinor: z.number().int().safe().nonnegative(),
+  maxAmountMinor: z.number().int().safe().positive(),
   currency: z.string().regex(/^[A-Z]{3}$/),
-  totalBudgetMinor: z.number().int().nonnegative().finite(),
-  maxOperations: z.number().int().positive().finite(),
-  frequencyWindowSeconds: z.number().int().positive().finite(),
-  maxOperationsPerWindow: z.number().int().positive().finite(),
+  totalBudgetMinor: z.number().int().safe().nonnegative(),
+  maxOperations: sqlPositiveInteger,
+  frequencyWindowSeconds: sqlPositiveInteger,
+  maxOperationsPerWindow: sqlPositiveInteger,
   paymentInstrumentAlias: opaqueId,
   allowedPisp: opaqueId.optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.minAmountMinor > value.maxAmountMinor) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'minAmountMinor exceeds maxAmountMinor' });
+  }
+  if (value.maxOperationsPerWindow > value.maxOperations) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'maxOperationsPerWindow exceeds maxOperations' });
   }
 });
 
@@ -123,6 +127,7 @@ export interface OpenMandateRegistry {
     tenantId: string;
     audience: string;
     now?: Date;
+    clockSkewMs?: number;
   }): OpenMandateRecord;
   activateWithVerifiedSignature(input: {
     id: string;
@@ -133,8 +138,10 @@ export interface OpenMandateRegistry {
     /** Runs inside the activation critical section before status becomes active. Failure leaves mandate awaiting signature. */
     persistProof?: (proof: OpenMandateActivationProof) => Promise<void>;
     now?: Date;
+    clockSkewMs?: number;
   }): Promise<OpenMandateRecord>;
-  revoke(id: string): OpenMandateRecord;
+  /** Serialized with activation so a resolved revocation can never be overwritten by an in-flight activation. */
+  revoke(id: string): Promise<OpenMandateRecord>;
 }
 
 function cloneRecord(record: OpenMandateRecord): OpenMandateRecord {
@@ -151,8 +158,12 @@ export async function verifyClosedMandateJws(input: {
   jws: string;
   publicKeyJwk: JsonWebKey;
   expectedPayload: Record<string, unknown>;
-  expectedKeyId?: string;
+  /** Required non-empty key id; missing/mismatched JWS kid always fails. */
+  expectedKeyId: string;
 }): Promise<Record<string, unknown>> {
+  if (typeof input.expectedKeyId !== 'string' || input.expectedKeyId.trim().length === 0) {
+    throw new DomainError('Closed mandate JWS expectedKeyId is required', 'CLOSED_MANDATE_JWS');
+  }
   let header: ReturnType<typeof decodeProtectedHeader>;
   try {
     header = decodeProtectedHeader(input.jws);
@@ -161,7 +172,7 @@ export async function verifyClosedMandateJws(input: {
   }
   if (header.alg !== 'ES256') throw new DomainError('Closed mandate JWS alg must be ES256', 'CLOSED_MANDATE_JWS');
   if (header.typ !== 'JWT') throw new DomainError('Closed mandate JWS typ must be JWT', 'CLOSED_MANDATE_JWS');
-  if (input.expectedKeyId !== undefined && header.kid !== input.expectedKeyId) {
+  if (header.kid !== input.expectedKeyId) {
     throw new DomainError('Closed mandate JWS kid mismatch', 'CLOSED_MANDATE_JWS');
   }
   let key;
@@ -225,10 +236,18 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
     tenantId: string;
     audience: string;
     now?: Date;
+    clockSkewMs?: number;
   }): OpenMandateRecord {
     const record = this.get(input.id);
     const now = input.now ?? new Date();
+    assertValidNow(now, 'OPEN_MANDATE_TIME');
+    const clockSkewMs = resolveClockSkewMs(input.clockSkewMs);
     if (record.status !== 'active') throw new DomainError('Open mandate is not active', 'OPEN_MANDATE_INACTIVE');
+    const issuedAtMs = Date.parse(record.issuedAt);
+    if (!Number.isFinite(issuedAtMs)) throw new DomainError('Open mandate issuedAt invalid', 'OPEN_MANDATE_ISSUED');
+    if (now.getTime() < issuedAtMs) {
+      throw new DomainError('Open mandate is not yet valid (before issuedAt)', 'OPEN_MANDATE_NOT_YET_VALID');
+    }
     if (Date.parse(record.expiresAt) <= now.getTime()) throw new DomainError('Open mandate expired', 'OPEN_MANDATE_EXPIRED');
     if (record.userReference !== input.userReference) throw new DomainError('Open mandate user mismatch', 'OPEN_MANDATE_USER');
     if (record.agentId !== input.agentId) throw new DomainError('Open mandate agent mismatch', 'OPEN_MANDATE_AGENT');
@@ -242,8 +261,11 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
       throw new DomainError('Open mandate activation proof signature mismatch', 'OPEN_MANDATE_PROOF');
     }
     const activatedAt = Date.parse(proof.activatedAt);
-    if (!Number.isFinite(activatedAt) || activatedAt > now.getTime() + 1000) {
+    if (!Number.isFinite(activatedAt) || activatedAt > now.getTime() + clockSkewMs) {
       throw new DomainError('Open mandate activation proof timestamp invalid', 'OPEN_MANDATE_PROOF');
+    }
+    if (activatedAt < issuedAtMs) {
+      throw new DomainError('Open mandate activation proof precedes issuedAt', 'OPEN_MANDATE_PROOF');
     }
     if (openMandatePayloadHash(record) !== record.canonicalPayloadHash) {
       throw new DomainError('Open mandate payload hash integrity failure', 'OPEN_MANDATE_HASH');
@@ -259,6 +281,7 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
     proof?: Omit<OpenMandateActivationProof, 'signature' | 'payloadHash' | 'activatedAt'> & { activatedAt?: string };
     persistProof?: (proof: OpenMandateActivationProof) => Promise<void>;
     now?: Date;
+    clockSkewMs?: number;
   }): Promise<OpenMandateRecord> {
     const run = this.lock.then(async () => {
       const stored = this.records.get(input.id);
@@ -267,6 +290,13 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
         throw new DomainError('Open mandate is not awaiting user signature', 'OPEN_MANDATE_STATE');
       }
       const now = input.now ?? new Date();
+      assertValidNow(now, 'OPEN_MANDATE_TIME');
+      const clockSkewMs = resolveClockSkewMs(input.clockSkewMs);
+      const issuedAtMs = Date.parse(stored.issuedAt);
+      if (!Number.isFinite(issuedAtMs)) throw new DomainError('Open mandate issuedAt invalid', 'OPEN_MANDATE_ISSUED');
+      if (now.getTime() < issuedAtMs) {
+        throw new DomainError('Open mandate cannot activate before issuedAt', 'OPEN_MANDATE_NOT_YET_VALID');
+      }
       if (Date.parse(stored.expiresAt) <= now.getTime()) throw new DomainError('Open mandate expired', 'OPEN_MANDATE_EXPIRED');
       const liveHash = openMandatePayloadHash(stored);
       if (liveHash !== stored.canonicalPayloadHash) {
@@ -285,6 +315,10 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
       if (!valid) throw new DomainError('Trusted Surface signature invalid', 'USER_SIGNATURE_INVALID');
 
       const activatedAt = input.proof?.activatedAt ?? now.toISOString();
+      const activatedAtMs = Date.parse(activatedAt);
+      if (!Number.isFinite(activatedAtMs) || activatedAtMs < issuedAtMs || activatedAtMs > now.getTime() + clockSkewMs) {
+        throw new DomainError('Open mandate activationProof.activatedAt outside issuedAt/now skew window', 'OPEN_MANDATE_PROOF');
+      }
       const activationProof: OpenMandateActivationProof = {
         signature: input.signature,
         payloadHash: stored.canonicalPayloadHash,
@@ -310,11 +344,15 @@ export class InMemoryOpenMandateRegistry implements OpenMandateRegistry {
     return run;
   }
 
-  revoke(id: string): OpenMandateRecord {
-    const stored = this.records.get(id);
-    if (!stored) throw new DomainError('Open mandate not found', 'OPEN_MANDATE_NOT_FOUND');
-    stored.status = 'revoked';
-    return cloneRecord(stored);
+  async revoke(id: string): Promise<OpenMandateRecord> {
+    const run = this.lock.then(() => {
+      const stored = this.records.get(id);
+      if (!stored) throw new DomainError('Open mandate not found', 'OPEN_MANDATE_NOT_FOUND');
+      stored.status = 'revoked';
+      return cloneRecord(stored);
+    });
+    this.lock = run.then(() => undefined, () => undefined);
+    return run;
   }
 }
 
@@ -356,6 +394,20 @@ function resolvePolicyLedger(input: {
   );
 }
 
+function assertValidNow(now: Date, code: string): void {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    throw new DomainError('Clock must return a valid Date', code);
+  }
+}
+
+function resolveClockSkewMs(value: number | undefined): number {
+  const clockSkewMs = value ?? 5_000;
+  if (!Number.isSafeInteger(clockSkewMs) || clockSkewMs < 0) {
+    throw new DomainError('clockSkewMs must be a non-negative safe integer', 'OPEN_MANDATE_CONFIG');
+  }
+  return clockSkewMs;
+}
+
 export async function createAutonomousClosedMandates(input: {
   openCheckoutMandateId: string;
   openPaymentMandateId: string;
@@ -369,6 +421,8 @@ export async function createAutonomousClosedMandates(input: {
   agentKeyReference: string;
   paymentInstrumentAlias: string;
   payeeId: string;
+  /** Required when either open mandate constrains allowedPisp. */
+  pispId?: string;
   merchantSigner: MerchantSigner;
   agentTrustVerifier: AgentTrustVerifier;
   agentSigner: AgentMandateSigner;
@@ -420,19 +474,19 @@ export async function createAutonomousClosedMandates(input: {
   assertTrustedAgent(trust);
 
   const evaluator = input.policyEvaluator ?? new MandatePolicyEvaluator();
-  const policy = evaluator.evaluate({
+  const evaluation = evaluator.evaluate({
     checkout,
     payeeId: input.payeeId,
     paymentInstrumentAlias: input.paymentInstrumentAlias,
     openCheckout: openCheckoutMandate,
     openPayment: openPaymentMandate,
+    pispId: input.pispId,
     now,
   });
-  evaluator.assertAllowed(policy);
+  evaluator.assertAllowed(evaluation);
 
   const ledger = resolvePolicyLedger(input);
-
-  await ledger.reserve({
+  const reservation = await ledger.reserve({
     checkoutMandateId: openCheckoutMandate.id,
     paymentMandateId: openPaymentMandate.id,
     transactionId: input.transactionId,
@@ -441,6 +495,7 @@ export async function createAutonomousClosedMandates(input: {
     paymentConstraints: openPaymentMandate.constraints,
     now,
   });
+  const policy = { ...evaluation, remainingBudgetMinor: reservation.remainingBudgetMinor };
 
   const common = {
     transaction_id: input.transactionId,
@@ -462,6 +517,7 @@ export async function createAutonomousClosedMandates(input: {
     vct: 'mandate.payment.1',
     jti: `closed_payment_${randomUUID().replace(/-/g, '')}`,
     payee_id: input.payeeId,
+    ...(input.pispId ? { pisp_id: input.pispId } : {}),
     payment_instrument_alias: input.paymentInstrumentAlias,
     amount_minor: checkout.totals.totalMinor,
     currency: checkout.totals.currency,

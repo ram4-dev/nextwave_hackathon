@@ -94,11 +94,31 @@ describe('pass3: outbox claim-token CAS', () => {
 });
 
 describe('pass3: strict closed JWS', () => {
-  it('rejects missing/wrong kid, missing/wrong typ, altered payload, and invalid signature', async () => {
+  it('requires expectedKeyId and rejects empty/missing/wrong kid, wrong typ, altered payload, and invalid signature', async () => {
     const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
     const publicKeyJwk = await exportJWK(publicKey);
     const payload = { vct: 'mandate.checkout.1', amount: 1 };
     const body = new TextEncoder().encode(JSON.stringify(payload));
+
+    const assertRequiredKeyIdAtCompileTime = () => {
+      // @ts-expect-error expectedKeyId is mandatory in the public API.
+      void verifyClosedMandateJws({ jws: 'unused', publicKeyJwk, expectedPayload: payload });
+    };
+    void assertRequiredKeyIdAtCompileTime;
+
+    const valid = await new CompactSign(body).setProtectedHeader({ alg: 'ES256', typ: 'JWT', kid: 'agent-1' }).sign(privateKey);
+    await expect(verifyClosedMandateJws({
+      jws: valid, publicKeyJwk, expectedPayload: payload, expectedKeyId: 'agent-1',
+    })).resolves.toEqual(payload);
+    await expect(verifyClosedMandateJws({
+      jws: valid, publicKeyJwk, expectedPayload: payload,
+    } as unknown as Parameters<typeof verifyClosedMandateJws>[0])).rejects.toMatchObject({ code: 'CLOSED_MANDATE_JWS' });
+    await expect(verifyClosedMandateJws({
+      jws: valid, publicKeyJwk, expectedPayload: payload, expectedKeyId: '',
+    })).rejects.toMatchObject({ code: 'CLOSED_MANDATE_JWS' });
+    await expect(verifyClosedMandateJws({
+      jws: valid, publicKeyJwk, expectedPayload: payload, expectedKeyId: '   ',
+    })).rejects.toMatchObject({ code: 'CLOSED_MANDATE_JWS' });
 
     const missingKid = await new CompactSign(body).setProtectedHeader({ alg: 'ES256', typ: 'JWT' }).sign(privateKey);
     await expect(verifyClosedMandateJws({
@@ -211,7 +231,7 @@ describe('pass3: draft lineage', () => {
 });
 
 describe('pass3: future-issued fail-closed', () => {
-  it('rejects future issuedAt beyond skew and future JWT iat on verify', async () => {
+  it('rejects future issuedAt before signing, accepts the exact skew edge, and validates skew/clock config', async () => {
     const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const sut = createMandateService({ merchantSigner: signer, now: () => now, clockSkewMs: 5_000 });
     await expect(sut.createMerchantCheckout({
@@ -225,17 +245,32 @@ describe('pass3: future-issued fail-closed', () => {
     })).rejects.toMatchObject({ code: 'MANDATE_ISSUED_FUTURE' });
 
     const wall = new Date('2020-01-01T00:00:00.000Z');
-    const pastSigner = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => wall });
-    const futureJwt = await pastSigner.signCheckout({
+    const pastSigner = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => wall, clockSkewMs: 5_000 });
+    const futureCheckout = {
       transactionId: 'txn_past',
       merchant: { id: 'merchant_001', legalName: 'Merchant Inc', website: 'https://merchant.example' },
       lineItems: [{ productId: 'p1', title: 'P', quantity: 1, unitAmountMinor: 50, taxAmountMinor: 0, discountAmountMinor: 0 }],
       totals: { subtotalMinor: 50, taxMinor: 0, discountMinor: 0, totalMinor: 50, currency: 'USD' },
-      issuedAt: '2030-01-01T00:00:00.000Z',
-      expiresAt: '2030-01-01T00:10:00.000Z',
-      source: { type: 'manual', requestId: 'rp' },
+      issuedAt: new Date(wall.getTime() + 5_001).toISOString(),
+      expiresAt: new Date(wall.getTime() + 605_001).toISOString(),
+      source: { type: 'manual' as const, requestId: 'rp' },
+    };
+    await expect(pastSigner.signCheckout(futureCheckout)).rejects.toMatchObject({ code: 'CHECKOUT_JWT_FUTURE' });
+    await expect(pastSigner.signCheckout({
+      ...futureCheckout,
+      issuedAt: new Date(wall.getTime() + 5_000).toISOString(),
+      expiresAt: new Date(wall.getTime() + 605_000).toISOString(),
+    })).resolves.toMatch(/^[^.]+\.[^.]+\.[^.]+$/);
+    await expect(createLocalMerchantSigner({
+      issuer: 'merchant_001', nodeEnv: 'test', clockSkewMs: -1,
+    })).rejects.toMatchObject({ code: 'MERCHANT_SIGNER_CONFIG' });
+    await expect(createLocalMerchantSigner({
+      issuer: 'merchant_001', nodeEnv: 'test', clockSkewMs: 1.5,
+    })).rejects.toMatchObject({ code: 'MERCHANT_SIGNER_CONFIG' });
+    const invalidClock = await createLocalMerchantSigner({
+      issuer: 'merchant_001', nodeEnv: 'test', now: () => new Date(Number.NaN),
     });
-    await expect(pastSigner.verifyCheckout(futureJwt)).rejects.toMatchObject({ code: 'CHECKOUT_JWT' });
+    await expect(invalidClock.signCheckout(futureCheckout)).rejects.toMatchObject({ code: 'MERCHANT_SIGNER_CONFIG' });
   });
 });
 

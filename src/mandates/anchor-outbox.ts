@@ -51,7 +51,12 @@ export interface MandateAnchorOutbox {
 }
 
 export function isStrictEvidenceHash(value: string): boolean {
-  return BASE64URL_SHA256.test(value) || BYTES32_HEX.test(value);
+  if (BYTES32_HEX.test(value)) return !/^0x0{64}$/i.test(value);
+  if (!BASE64URL_SHA256.test(value)) return false;
+  const decoded = Buffer.from(value, 'base64url');
+  return decoded.length === 32
+    && decoded.toString('base64url') === value
+    && decoded.some((byte) => byte !== 0);
 }
 
 function assertHashOnly(evidence: MandateAnchorEvidence): void {
@@ -65,7 +70,7 @@ function assertHashOnly(evidence: MandateAnchorEvidence): void {
   ];
   for (const value of values) {
     if (typeof value !== 'string' || !isStrictEvidenceHash(value)) {
-      throw new DomainError('Anchor evidence must be SHA-256 base64url (43) or bytes32 hex', 'ANCHOR_EVIDENCE');
+      throw new DomainError('Anchor evidence must be a canonical non-zero SHA-256 base64url or bytes32 hex value', 'ANCHOR_EVIDENCE');
     }
   }
   if (!Number.isInteger(evidence.mandateType) || evidence.mandateType < 0 || evidence.mandateType > 255) {
@@ -107,7 +112,19 @@ export class InMemoryMandateAnchorOutbox implements MandateAnchorOutbox {
     const existingId = this.byEvidence.get(key);
     if (existingId) {
       const existing = this.jobs.get(existingId);
-      if (existing) return structuredClone(existing);
+      if (!existing) throw new DomainError('Anchor job index corrupt', 'ANCHOR_NOT_FOUND');
+      const same =
+        existing.closedCheckoutHash === evidence.closedCheckoutHash
+        && existing.closedPaymentHash === evidence.closedPaymentHash
+        && existing.checkoutHash === evidence.checkoutHash
+        && existing.transactionIdHash === evidence.transactionIdHash
+        && existing.agentIdHash === evidence.agentIdHash
+        && existing.policyVersionHash === evidence.policyVersionHash
+        && existing.mandateType === evidence.mandateType;
+      if (!same) {
+        throw new DomainError('Anchor evidence conflicts with an existing job for the same closed-hash key', 'ANCHOR_EVIDENCE_CONFLICT');
+      }
+      return structuredClone(existing);
     }
     const now = new Date().toISOString();
     const job: MandateAnchorJob = {

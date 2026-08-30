@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createMandatesFromFile } from '../scripts/mandates-create.js';
+import { createMandatesFromFile, materializeCliInput } from '../scripts/mandates-create.js';
 import {
   createLocalMerchantSigner,
   createMandateService,
@@ -262,7 +262,77 @@ afterEach(async () => {
 });
 
 describe('mandates:create CLI handler', () => {
-  it('generates checkout and payment drafts from a safe fixture', async () => {
+  it('preserves supplied timestamps by default and rejects future issuedAt', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'mandates-'));
+    tempDirectories.push(dir);
+    const futureFixture = {
+      ...input(),
+      issuedAt: '2030-01-01T00:00:00.000Z',
+      expiresAt: '2030-01-01T01:00:00.000Z',
+      userReference: 'user_001',
+      checkoutMandate: { nonce: 'fixture_checkout_nonce', issuedAt: '2030-01-01T00:00:00.000Z', expiresAt: '2030-01-01T01:00:00.000Z' },
+    };
+    const futurePath = path.join(dir, 'future.json');
+    await writeFile(futurePath, JSON.stringify(futureFixture));
+    await expect(createMandatesFromFile(futurePath, { NODE_ENV: 'test' }, {
+      now: () => now,
+    })).rejects.toThrow(/issuedAt is in the future/);
+
+    const validFixture = {
+      ...input(),
+      userReference: 'user_001',
+      checkoutMandate: { nonce: 'fixture_checkout_nonce', issuedAt, expiresAt },
+    };
+    const preserved = materializeCliInput(validFixture, { now });
+    expect(preserved.issuedAt).toBe(validFixture.issuedAt);
+    expect(preserved.expiresAt).toBe(validFixture.expiresAt);
+    expect(preserved.checkoutMandate.issuedAt).toBe(validFixture.checkoutMandate.issuedAt);
+    expect(preserved).not.toBe(validFixture);
+
+    expect(() => materializeCliInput({
+      ...validFixture,
+      issuedAt: '2020-01-01T00:00:00.000Z',
+      expiresAt: '2020-01-01T00:10:00.000Z',
+    }, { now })).toThrow(/expired/);
+  });
+
+  it('materializes demo clock only when explicitly requested', async () => {
+    const result = await createMandatesFromFile('./fixtures/validated-checkout.json', { NODE_ENV: 'test' }, {
+      materializeDemoClock: true,
+      now: () => now,
+    });
+    expect(result.checkoutDraft.mandateType).toBe('checkout');
+    expect(result.paymentDraft?.mandateType).toBe('payment');
+    expect(result.checkout.expiresAt).toBe(new Date(expiresAt).toISOString());
+  });
+
+  it('keeps malformed timestamps fail-closed even with demo materialization', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'mandates-'));
+    tempDirectories.push(dir);
+    const malformedPath = path.join(dir, 'malformed.json');
+    await writeFile(malformedPath, JSON.stringify({
+      ...input(),
+      issuedAt: 'not-a-date',
+      userReference: 'user_001',
+      checkoutMandate: { nonce: 'fixture_checkout_nonce', issuedAt, expiresAt },
+    }));
+    const malformed = {
+      ...input(),
+      issuedAt: 'not-a-date',
+      userReference: 'user_001',
+      checkoutMandate: { nonce: 'fixture_checkout_nonce', issuedAt, expiresAt },
+    };
+    expect(() => materializeCliInput(malformed, {
+      materializeDemoClock: true,
+      now,
+    })).toThrow(/checkout requires finite/);
+    await expect(createMandatesFromFile(malformedPath, { NODE_ENV: 'test' }, {
+      materializeDemoClock: true,
+      now: () => now,
+    })).rejects.toThrow(/restricted to the bundled/);
+  });
+
+  it('generates checkout and payment drafts from a safe fixture with real timestamps', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'mandates-'));
     tempDirectories.push(dir);
     const fixture = {
@@ -278,7 +348,7 @@ describe('mandates:create CLI handler', () => {
     };
     const fixturePath = path.join(dir, 'checkout.json');
     await writeFile(fixturePath, JSON.stringify(fixture));
-    const result = await createMandatesFromFile(fixturePath, { NODE_ENV: 'test' });
+    const result = await createMandatesFromFile(fixturePath, { NODE_ENV: 'test' }, { now: () => now });
     expect(result.checkoutDraft.mandateType).toBe('checkout');
     expect(result.paymentDraft?.mandateType).toBe('payment');
     expect(result.checkout.checkoutJwt).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);

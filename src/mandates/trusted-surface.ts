@@ -124,6 +124,30 @@ export function mandateApprovalDomain(chainId: 8453 | 84532): TypedDataDomain {
   return { name: 'KYA AP2 Trusted Surface', version: '1', chainId };
 }
 
+function approvalIntegrityError(field: string): never {
+  throw new DomainError(`Stored approval challenge integrity failure: ${field}`, 'APPROVAL_INTEGRITY');
+}
+
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function assertExactApprovalDomain(domain: TypedDataDomain, chainId: 8453 | 84532): void {
+  const expected = mandateApprovalDomain(chainId);
+  if (
+    !domain
+    || typeof domain !== 'object'
+    || !hasExactKeys(domain, ['name', 'version', 'chainId'])
+    || domain.name !== expected.name
+    || domain.version !== expected.version
+    || domain.chainId !== expected.chainId
+  ) {
+    approvalIntegrityError('domain');
+  }
+}
+
 function assertKyaUserCanApprove(
   repoStore: Awaited<ReturnType<Repository['getStore']>>,
   mandate: OpenMandateRecord,
@@ -153,6 +177,8 @@ function assertKyaUserCanApprove(
 }
 
 export class Eip712TrustedSurfaceService {
+  private readonly clockSkewMs: number;
+
   constructor(
     private readonly dependencies: {
       repo: Repository;
@@ -161,9 +187,23 @@ export class Eip712TrustedSurfaceService {
       verifier: TypedDataVerifier;
       chainId: 8453 | 84532;
       challengeTtlSeconds?: number;
+      clockSkewMs?: number;
       now?: () => Date;
     },
-  ) {}
+  ) {
+    this.clockSkewMs = dependencies.clockSkewMs ?? 5_000;
+    if (!Number.isSafeInteger(this.clockSkewMs) || this.clockSkewMs < 0) {
+      throw new DomainError('clockSkewMs must be a non-negative safe integer', 'APPROVAL_CONFIG');
+    }
+  }
+
+  private currentTime(): Date {
+    const now = this.dependencies.now?.() ?? new Date();
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      throw new DomainError('Trusted Surface clock must return a valid Date', 'APPROVAL_CONFIG');
+    }
+    return now;
+  }
 
   async createApprovalChallenge(input: {
     openMandateId: string;
@@ -183,12 +223,19 @@ export class Eip712TrustedSurfaceService {
     } catch {
       throw new DomainError('Invalid owner wallet address', 'APPROVAL_ADDRESS');
     }
-    const now = this.dependencies.now?.() ?? new Date();
+    const now = this.currentTime();
     const mandate = this.dependencies.registry.get(input.openMandateId);
     if (mandate.status !== 'awaiting_user_signature') {
       throw new DomainError('Open mandate is not awaiting user approval', 'APPROVAL_MANDATE_STATE');
     }
-    if (Date.parse(mandate.expiresAt) <= now.getTime()) throw new DomainError('Open mandate expired', 'APPROVAL_EXPIRED');
+    const mandateExpiresAtMs = Date.parse(mandate.expiresAt);
+    if (!Number.isFinite(mandateExpiresAtMs) || mandateExpiresAtMs <= now.getTime()) {
+      throw new DomainError('Open mandate expired', 'APPROVAL_EXPIRED');
+    }
+    const issuedAtMs = Date.parse(mandate.issuedAt);
+    if (!Number.isFinite(issuedAtMs) || now.getTime() < issuedAtMs) {
+      throw new DomainError('Open mandate cannot be challenged before issuedAt', 'OPEN_MANDATE_NOT_YET_VALID');
+    }
     const liveHash = openMandatePayloadHash(mandate);
     if (liveHash !== mandate.canonicalPayloadHash) {
       throw new DomainError('Open mandate payload mutated after create', 'OPEN_MANDATE_HASH');
@@ -197,15 +244,26 @@ export class Eip712TrustedSurfaceService {
     assertKyaUserCanApprove(await this.dependencies.repo.getStore(), mandate, ownerAddress, now, mandateKeyThumbprint);
     const ttl = this.dependencies.challengeTtlSeconds ?? 300;
     if (!Number.isSafeInteger(ttl) || ttl <= 0) throw new DomainError('Challenge TTL must be positive', 'APPROVAL_CONFIG');
-    const expiresAt = new Date(Math.min(Date.parse(mandate.expiresAt), now.getTime() + ttl * 1000)).toISOString();
+    const issuedAtSeconds = Math.max(
+      Math.floor(now.getTime() / 1000),
+      Math.ceil(issuedAtMs / 1000),
+    );
+    const expiresAtSeconds = Math.floor(
+      Math.min(mandateExpiresAtMs, now.getTime() + ttl * 1000) / 1000,
+    );
+    if (expiresAtSeconds <= issuedAtSeconds) {
+      throw new DomainError('Approval challenge has no canonical validity window', 'APPROVAL_EXPIRED');
+    }
+    const issuedAt = new Date(issuedAtSeconds * 1000).toISOString();
+    const expiresAt = new Date(expiresAtSeconds * 1000).toISOString();
     const nonce = randomUUID();
     const message: MandateApprovalMessage = {
       mandateHash: sha256Hex32(canonicalJson(openPayload(mandate))),
       userReferenceHash: sha256Hex32(mandate.userReference),
       agentIdHash: sha256Hex32(mandate.agentId),
       nonceHash: sha256Hex32(nonce),
-      issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
-      expiresAt: BigInt(Math.floor(Date.parse(expiresAt) / 1000)),
+      issuedAt: BigInt(issuedAtSeconds),
+      expiresAt: BigInt(expiresAtSeconds),
     };
     const challenge: Eip712ApprovalChallenge = {
       id: `approval_${randomUUID().replace(/-/g, '')}`,
@@ -213,7 +271,7 @@ export class Eip712TrustedSurfaceService {
       ownerAddress,
       chainId: this.dependencies.chainId,
       nonce,
-      issuedAt: now.toISOString(),
+      issuedAt,
       expiresAt,
       expectedPayloadHash: mandate.canonicalPayloadHash,
       domain: mandateApprovalDomain(this.dependencies.chainId),
@@ -237,26 +295,90 @@ export class Eip712TrustedSurfaceService {
     } catch {
       throw new DomainError('Invalid owner wallet address', 'APPROVAL_ADDRESS');
     }
-    const now = this.dependencies.now?.() ?? new Date();
+    const now = this.currentTime();
     const challenge = await this.dependencies.approvalStore.get(input.challengeId);
+    if (!challenge || challenge.id !== input.challengeId) approvalIntegrityError('challengeId');
     if (challenge.consumedAt) throw new DomainError('Approval challenge already used', 'APPROVAL_REPLAY');
-    if (challenge.ownerAddress.toLowerCase() !== ownerAddress.toLowerCase()) {
+    let storedOwner: `0x${string}`;
+    try {
+      storedOwner = getAddress(challenge.ownerAddress) as `0x${string}`;
+    } catch {
+      approvalIntegrityError('ownerAddress');
+    }
+    if (storedOwner !== challenge.ownerAddress) approvalIntegrityError('ownerAddress');
+    if (storedOwner !== ownerAddress) {
       throw new DomainError('Approval wallet mismatch', 'APPROVAL_SUBJECT');
     }
-    if (challenge.chainId !== this.dependencies.chainId || new Date(challenge.expiresAt).getTime() <= now.getTime()) {
+    if (challenge.chainId !== this.dependencies.chainId) approvalIntegrityError('chainId');
+    assertExactApprovalDomain(challenge.domain, this.dependencies.chainId);
+    if (
+      !challenge.message
+      || typeof challenge.message !== 'object'
+      || !hasExactKeys(challenge.message, ['mandateHash', 'userReferenceHash', 'agentIdHash', 'nonceHash', 'issuedAt', 'expiresAt'])
+    ) {
+      approvalIntegrityError('message');
+    }
+    const challengeIssuedAt = Date.parse(challenge.issuedAt);
+    const challengeExpiresAt = Date.parse(challenge.expiresAt);
+    if (
+      !Number.isFinite(challengeIssuedAt)
+      || !Number.isFinite(challengeExpiresAt)
+      || new Date(challengeIssuedAt).toISOString() !== challenge.issuedAt
+      || new Date(challengeExpiresAt).toISOString() !== challenge.expiresAt
+      || challengeExpiresAt <= challengeIssuedAt
+      || challengeIssuedAt > now.getTime() + this.clockSkewMs
+    ) {
+      approvalIntegrityError('timestamps');
+    }
+    if (
+      typeof challenge.message.issuedAt !== 'bigint'
+      || typeof challenge.message.expiresAt !== 'bigint'
+      || BigInt(challengeIssuedAt) !== challenge.message.issuedAt * 1000n
+      || BigInt(challengeExpiresAt) !== challenge.message.expiresAt * 1000n
+    ) {
+      approvalIntegrityError('timestamps');
+    }
+    if (challengeExpiresAt <= now.getTime()) {
       throw new DomainError('Approval challenge expired', 'APPROVAL_EXPIRED');
     }
-    const mandate = this.dependencies.registry.get(challenge.openMandateId);
+    if (typeof challenge.openMandateId !== 'string' || challenge.openMandateId.length === 0) {
+      approvalIntegrityError('openMandateId');
+    }
+    let mandate: OpenMandateRecord;
+    try {
+      mandate = this.dependencies.registry.get(challenge.openMandateId);
+    } catch {
+      approvalIntegrityError('openMandateId');
+    }
+    if (mandate.id !== challenge.openMandateId) approvalIntegrityError('openMandateId');
+    if (typeof challenge.nonce !== 'string' || challenge.nonce.length === 0) approvalIntegrityError('nonce');
+    const mandateIssuedAt = Date.parse(mandate.issuedAt);
+    const mandateExpiresAt = Date.parse(mandate.expiresAt);
+    if (
+      !Number.isFinite(mandateIssuedAt)
+      || !Number.isFinite(mandateExpiresAt)
+      || challengeIssuedAt < mandateIssuedAt
+      || challengeExpiresAt > mandateExpiresAt
+    ) {
+      approvalIntegrityError('mandateWindow');
+    }
+    const liveHash = openMandatePayloadHash(mandate);
+    if (liveHash !== mandate.canonicalPayloadHash || challenge.expectedPayloadHash !== liveHash) {
+      approvalIntegrityError('expectedPayloadHash');
+    }
+    const expectedMessage: MandateApprovalMessage = {
+      mandateHash: sha256Hex32(canonicalJson(openPayload(mandate))),
+      userReferenceHash: sha256Hex32(mandate.userReference),
+      agentIdHash: sha256Hex32(mandate.agentId),
+      nonceHash: sha256Hex32(challenge.nonce),
+      issuedAt: BigInt(challengeIssuedAt / 1000),
+      expiresAt: BigInt(challengeExpiresAt / 1000),
+    };
+    for (const field of Object.keys(expectedMessage) as Array<keyof MandateApprovalMessage>) {
+      if (challenge.message[field] !== expectedMessage[field]) approvalIntegrityError(`message.${field}`);
+    }
     const mandateKeyThumbprint = await calculateJwkThumbprint(mandate.agentPublicKeyJwk, 'sha256');
     assertKyaUserCanApprove(await this.dependencies.repo.getStore(), mandate, ownerAddress, now, mandateKeyThumbprint);
-    const liveHash = openMandatePayloadHash(mandate);
-    if (liveHash !== mandate.canonicalPayloadHash || liveHash !== challenge.expectedPayloadHash) {
-      throw new DomainError('Open mandate payload hash mismatch at activation', 'OPEN_MANDATE_HASH');
-    }
-    const expectedMessageHash = sha256Hex32(canonicalJson(openPayload(mandate)));
-    if (challenge.message.mandateHash !== expectedMessageHash) {
-      throw new DomainError('Challenge mandate hash does not match canonical payload', 'APPROVAL_HASH');
-    }
     const valid = await this.dependencies.verifier.verify({
       address: ownerAddress,
       domain: challenge.domain,
@@ -274,6 +396,7 @@ export class Eip712TrustedSurfaceService {
       signature: input.signature,
       expectedPayloadHash: challenge.expectedPayloadHash,
       now,
+      clockSkewMs: this.clockSkewMs,
       proof: { challengeId: challenge.id, ownerAddress, activatedAt: now.toISOString() },
       verifier: {
         verify: async ({ expectedPayloadHash }) => expectedPayloadHash === challenge.expectedPayloadHash && valid,

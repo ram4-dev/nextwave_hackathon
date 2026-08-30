@@ -2,7 +2,8 @@ create table if not exists public.mandate_policy_reservations (
   transaction_id text primary key,
   checkout_mandate_id text not null,
   payment_mandate_id text not null,
-  amount_minor bigint not null check (amount_minor >= 0),
+  amount_minor bigint not null constraint mandate_policy_reservations_amount_safe_chk
+    check (amount_minor between 0 and 9007199254740991),
   reserved_at timestamptz not null,
   released_at timestamptz,
   created_at timestamptz not null default now()
@@ -19,6 +20,12 @@ create index if not exists mandate_policy_reservations_payment_idx
 alter table public.mandate_policy_reservations enable row level security;
 revoke all on table public.mandate_policy_reservations from anon, authenticated;
 
+drop function if exists public.reserve_mandate_policy(
+  text, text, text, bigint, timestamptz,
+  bigint, integer, integer, integer,
+  bigint, integer, integer, integer
+);
+
 create or replace function public.reserve_mandate_policy(
   p_checkout_mandate_id text,
   p_payment_mandate_id text,
@@ -33,26 +40,37 @@ create or replace function public.reserve_mandate_policy(
   p_payment_max_operations integer,
   p_payment_frequency_window_seconds integer,
   p_payment_max_operations_per_window integer
-) returns void
+) returns table(remaining_budget_minor bigint)
 language plpgsql
 security invoker
 set search_path = public
 as $$
 declare
-  checkout_total bigint;
+  checkout_total numeric;
   checkout_operations integer;
   checkout_window_operations integer;
-  payment_total bigint;
+  payment_total numeric;
   payment_operations integer;
   payment_window_operations integer;
   lock_a text;
   lock_b text;
 begin
-  if p_amount_minor < 0
+  if p_checkout_mandate_id is null or p_checkout_mandate_id = ''
+    or p_payment_mandate_id is null or p_payment_mandate_id = ''
+    or p_transaction_id is null or p_transaction_id = ''
+    or p_reserved_at is null or not isfinite(p_reserved_at)
+    or p_amount_minor is null or p_amount_minor < 0 or p_amount_minor > 9007199254740991
+    or p_checkout_total_budget_minor is null or p_payment_total_budget_minor is null
+    or p_checkout_max_operations is null or p_payment_max_operations is null
+    or p_checkout_frequency_window_seconds is null or p_payment_frequency_window_seconds is null
+    or p_checkout_max_operations_per_window is null or p_payment_max_operations_per_window is null
     or p_checkout_total_budget_minor < 0 or p_payment_total_budget_minor < 0
+    or p_checkout_total_budget_minor > 9007199254740991 or p_payment_total_budget_minor > 9007199254740991
     or p_checkout_max_operations < 1 or p_payment_max_operations < 1
     or p_checkout_frequency_window_seconds < 1 or p_payment_frequency_window_seconds < 1
-    or p_checkout_max_operations_per_window < 1 or p_payment_max_operations_per_window < 1 then
+    or p_checkout_max_operations_per_window < 1 or p_payment_max_operations_per_window < 1
+    or p_checkout_max_operations_per_window > p_checkout_max_operations
+    or p_payment_max_operations_per_window > p_payment_max_operations then
     raise exception 'POLICY_INPUT_INVALID';
   end if;
 
@@ -110,14 +128,41 @@ begin
   ) values (
     p_transaction_id, p_checkout_mandate_id, p_payment_mandate_id, p_amount_minor, p_reserved_at
   );
+  return query select least(
+    p_checkout_total_budget_minor - checkout_total - p_amount_minor,
+    p_payment_total_budget_minor - payment_total - p_amount_minor
+  )::bigint;
 end;
 $$;
 
 create or replace function public.release_mandate_policy_reservation(p_transaction_id text)
-returns void language sql security invoker set search_path = public as $$
+returns void language plpgsql security invoker set search_path = public as $$
+declare
+  checkout_id text;
+  payment_id text;
+  lock_a text;
+  lock_b text;
+begin
+  select checkout_mandate_id, payment_mandate_id
+  into checkout_id, payment_id
+  from public.mandate_policy_reservations
+  where transaction_id = p_transaction_id and released_at is null;
+  if not found then return; end if;
+
+  if checkout_id < payment_id then
+    lock_a := checkout_id;
+    lock_b := payment_id;
+  else
+    lock_a := payment_id;
+    lock_b := checkout_id;
+  end if;
+  perform pg_advisory_xact_lock(hashtext(lock_a));
+  perform pg_advisory_xact_lock(hashtext(lock_b));
+
   update public.mandate_policy_reservations
   set released_at = now()
   where transaction_id = p_transaction_id and released_at is null;
+end;
 $$;
 
 revoke all on function public.reserve_mandate_policy(

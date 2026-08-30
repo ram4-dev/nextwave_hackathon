@@ -8,10 +8,13 @@ alter table if exists public.mandate_requests
 do $$
 begin
   if exists (
-    select 1 from information_schema.columns
-    where table_schema = current_schema() and table_name = 'mandate_requests' and column_name = 'prompt'
+    select 1
+    from pg_attribute
+    where attrelid = to_regclass('public.mandate_requests')
+      and attname = 'prompt'
+      and not attisdropped
   ) then
-    alter table mandate_requests drop column prompt cascade;
+    alter table public.mandate_requests drop column prompt cascade;
   end if;
 end $$;
 
@@ -22,8 +25,10 @@ drop function if exists public.create_mandate_request(text, text, text, text, te
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint
-    where conname = 'mandate_requests_prompt_hash_sha256_chk'
+    select 1
+    from pg_constraint c
+    where c.conname = 'mandate_requests_prompt_hash_sha256_chk'
+      and c.conrelid = to_regclass('public.mandate_requests')
   ) then
     alter table public.mandate_requests
       add constraint mandate_requests_prompt_hash_sha256_chk
@@ -35,8 +40,10 @@ end $$;
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint
-    where conname = 'mandate_requests_encrypted_prompt_ref_chk'
+    select 1
+    from pg_constraint c
+    where c.conname = 'mandate_requests_encrypted_prompt_ref_chk'
+      and c.conrelid = to_regclass('public.mandate_requests')
   ) then
     alter table public.mandate_requests
       add constraint mandate_requests_encrypted_prompt_ref_chk
@@ -100,6 +107,12 @@ drop function if exists public.reserve_mandate_policy(
   text, text, text, bigint, timestamptz, bigint, integer, integer, integer
 );
 
+drop function if exists public.reserve_mandate_policy(
+  text, text, text, bigint, timestamptz,
+  bigint, integer, integer, integer,
+  bigint, integer, integer, integer
+);
+
 create index if not exists mandate_policy_reservations_checkout_idx
   on public.mandate_policy_reservations (checkout_mandate_id, reserved_at)
   where released_at is null;
@@ -107,6 +120,12 @@ create index if not exists mandate_policy_reservations_checkout_idx
 create index if not exists mandate_policy_reservations_payment_idx
   on public.mandate_policy_reservations (payment_mandate_id, reserved_at)
   where released_at is null;
+
+alter table if exists public.mandate_policy_reservations
+  drop constraint if exists mandate_policy_reservations_amount_safe_chk;
+alter table if exists public.mandate_policy_reservations
+  add constraint mandate_policy_reservations_amount_safe_chk
+  check (amount_minor between 0 and 9007199254740991);
 
 create or replace function public.reserve_mandate_policy(
   p_checkout_mandate_id text,
@@ -122,26 +141,37 @@ create or replace function public.reserve_mandate_policy(
   p_payment_max_operations integer,
   p_payment_frequency_window_seconds integer,
   p_payment_max_operations_per_window integer
-) returns void
+) returns table(remaining_budget_minor bigint)
 language plpgsql
 security invoker
 set search_path = public
 as $$
 declare
-  checkout_total bigint;
+  checkout_total numeric;
   checkout_operations integer;
   checkout_window_operations integer;
-  payment_total bigint;
+  payment_total numeric;
   payment_operations integer;
   payment_window_operations integer;
   lock_a text;
   lock_b text;
 begin
-  if p_amount_minor < 0
+  if p_checkout_mandate_id is null or p_checkout_mandate_id = ''
+    or p_payment_mandate_id is null or p_payment_mandate_id = ''
+    or p_transaction_id is null or p_transaction_id = ''
+    or p_reserved_at is null or not isfinite(p_reserved_at)
+    or p_amount_minor is null or p_amount_minor < 0 or p_amount_minor > 9007199254740991
+    or p_checkout_total_budget_minor is null or p_payment_total_budget_minor is null
+    or p_checkout_max_operations is null or p_payment_max_operations is null
+    or p_checkout_frequency_window_seconds is null or p_payment_frequency_window_seconds is null
+    or p_checkout_max_operations_per_window is null or p_payment_max_operations_per_window is null
     or p_checkout_total_budget_minor < 0 or p_payment_total_budget_minor < 0
+    or p_checkout_total_budget_minor > 9007199254740991 or p_payment_total_budget_minor > 9007199254740991
     or p_checkout_max_operations < 1 or p_payment_max_operations < 1
     or p_checkout_frequency_window_seconds < 1 or p_payment_frequency_window_seconds < 1
-    or p_checkout_max_operations_per_window < 1 or p_payment_max_operations_per_window < 1 then
+    or p_checkout_max_operations_per_window < 1 or p_payment_max_operations_per_window < 1
+    or p_checkout_max_operations_per_window > p_checkout_max_operations
+    or p_payment_max_operations_per_window > p_payment_max_operations then
     raise exception 'POLICY_INPUT_INVALID';
   end if;
 
@@ -198,6 +228,40 @@ begin
   ) values (
     p_transaction_id, p_checkout_mandate_id, p_payment_mandate_id, p_amount_minor, p_reserved_at
   );
+  return query select least(
+    p_checkout_total_budget_minor - checkout_total - p_amount_minor,
+    p_payment_total_budget_minor - payment_total - p_amount_minor
+  )::bigint;
+end;
+$$;
+
+create or replace function public.release_mandate_policy_reservation(p_transaction_id text)
+returns void language plpgsql security invoker set search_path = public as $$
+declare
+  checkout_id text;
+  payment_id text;
+  lock_a text;
+  lock_b text;
+begin
+  select checkout_mandate_id, payment_mandate_id
+  into checkout_id, payment_id
+  from public.mandate_policy_reservations
+  where transaction_id = p_transaction_id and released_at is null;
+  if not found then return; end if;
+
+  if checkout_id < payment_id then
+    lock_a := checkout_id;
+    lock_b := payment_id;
+  else
+    lock_a := payment_id;
+    lock_b := checkout_id;
+  end if;
+  perform pg_advisory_xact_lock(hashtext(lock_a));
+  perform pg_advisory_xact_lock(hashtext(lock_b));
+
+  update public.mandate_policy_reservations
+  set released_at = now()
+  where transaction_id = p_transaction_id and released_at is null;
 end;
 $$;
 
@@ -220,6 +284,15 @@ do $$ begin
     bigint, integer, integer, integer,
     bigint, integer, integer, integer
   ) to service_role;
+exception when undefined_object then null;
+end $$;
+revoke all on function public.release_mandate_policy_reservation(text) from public;
+do $$ begin
+  revoke all on function public.release_mandate_policy_reservation(text) from anon, authenticated;
+exception when undefined_object then null;
+end $$;
+do $$ begin
+  grant execute on function public.release_mandate_policy_reservation(text) to service_role;
 exception when undefined_object then null;
 end $$;
 

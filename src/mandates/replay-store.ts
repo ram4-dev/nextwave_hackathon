@@ -12,18 +12,78 @@ type ReplayState = {
 
 const emptyState = (): ReplayState => ({ nonces: {}, checkoutDrafts: {}, paymentDrafts: {} });
 
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
+}
+
 function assertCheckoutRecord(record: StoredCheckoutDraft): StoredCheckoutDraft {
+  if (
+    !record
+    || typeof record !== 'object'
+    || Array.isArray(record)
+    || !hasExactKeys(record, [
+      'transactionId', 'checkoutHash', 'payloadHash', 'sub', 'aud', 'issuedAt', 'expiresAt', 'iat', 'exp',
+    ])
+  ) {
+    throw new DomainError('Invalid checkout draft lineage metadata', 'CHECKOUT_DRAFT_LINEAGE');
+  }
+  const issuedAtMs = Date.parse(record.issuedAt);
+  const expiresAtMs = Date.parse(record.expiresAt);
   if (
     !record.transactionId
     || !record.checkoutHash
     || !record.payloadHash
     || !record.sub
     || !record.aud
-    || !Number.isFinite(record.iat)
-    || !Number.isFinite(record.exp)
+    || typeof record.issuedAt !== 'string'
+    || typeof record.expiresAt !== 'string'
+    || !Number.isFinite(issuedAtMs)
+    || !Number.isFinite(expiresAtMs)
+    || expiresAtMs <= issuedAtMs
+    || !Number.isSafeInteger(record.iat)
+    || !Number.isSafeInteger(record.exp)
     || record.exp <= record.iat
+    || Math.floor(issuedAtMs / 1000) !== record.iat
+    || Math.floor(expiresAtMs / 1000) !== record.exp
   ) {
     throw new DomainError('Invalid checkout draft lineage metadata', 'CHECKOUT_DRAFT_LINEAGE');
+  }
+  return structuredClone(record);
+}
+
+function assertPaymentRecord(record: StoredPaymentDraft): StoredPaymentDraft {
+  if (
+    !record
+    || typeof record !== 'object'
+    || Array.isArray(record)
+    || !hasExactKeys(record, [
+      'transactionId', 'checkoutHash', 'checkoutMandateDraftId', 'payloadHash',
+      'issuedAt', 'expiresAt', 'iat', 'exp',
+    ])
+  ) {
+    throw new DomainError('Invalid payment draft lineage metadata', 'PAYMENT_DRAFT_LINEAGE');
+  }
+  const issuedAtMs = Date.parse(record.issuedAt);
+  const expiresAtMs = Date.parse(record.expiresAt);
+  if (
+    !record.transactionId
+    || !record.checkoutHash
+    || !record.checkoutMandateDraftId
+    || !record.payloadHash
+    || typeof record.issuedAt !== 'string'
+    || typeof record.expiresAt !== 'string'
+    || !Number.isFinite(issuedAtMs)
+    || !Number.isFinite(expiresAtMs)
+    || expiresAtMs <= issuedAtMs
+    || !Number.isSafeInteger(record.iat)
+    || !Number.isSafeInteger(record.exp)
+    || record.exp <= record.iat
+    || Math.floor(issuedAtMs / 1000) !== record.iat
+    || Math.floor(expiresAtMs / 1000) !== record.exp
+  ) {
+    throw new DomainError('Invalid payment draft lineage metadata', 'PAYMENT_DRAFT_LINEAGE');
   }
   return structuredClone(record);
 }
@@ -42,15 +102,17 @@ export class InMemoryMandateReplayStore implements MandateReplayStore {
   }
 
   async getCheckoutDraft(id: string) {
-    return this.state.checkoutDrafts[id] ? structuredClone(this.state.checkoutDrafts[id]) : undefined;
+    const record = this.state.checkoutDrafts[id];
+    return record ? assertCheckoutRecord(record) : undefined;
   }
 
   async rememberPaymentDraft(id: string, record: StoredPaymentDraft): Promise<void> {
-    this.state.paymentDrafts[id] = structuredClone(record);
+    this.state.paymentDrafts[id] = assertPaymentRecord(record);
   }
 
   async getPaymentDraft(id: string) {
-    return this.state.paymentDrafts[id] ? structuredClone(this.state.paymentDrafts[id]) : undefined;
+    const record = this.state.paymentDrafts[id];
+    return record ? assertPaymentRecord(record) : undefined;
   }
 }
 
@@ -98,15 +160,15 @@ export class JsonFileMandateReplayStore implements MandateReplayStore {
 
   async getCheckoutDraft(id: string) {
     const record = (await this.read()).checkoutDrafts[id];
-    return record ? structuredClone(record) : undefined;
+    return record ? assertCheckoutRecord(record) : undefined;
   }
 
   async rememberPaymentDraft(id: string, record: StoredPaymentDraft): Promise<void> {
-    await this.mutate((state) => { state.paymentDrafts[id] = structuredClone(record); });
+    await this.mutate((state) => { state.paymentDrafts[id] = assertPaymentRecord(record); });
   }
 
   async getPaymentDraft(id: string) {
     const record = (await this.read()).paymentDrafts?.[id];
-    return record ? structuredClone(record) : undefined;
+    return record ? assertPaymentRecord(record) : undefined;
   }
 }

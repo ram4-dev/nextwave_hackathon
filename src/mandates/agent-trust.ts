@@ -5,7 +5,7 @@ import type { Repository } from '../persistence/repository.js';
 export type AgentTrustDecision = {
   allowed: boolean;
   agentStatus: string;
-  attestationStatus: 'valid' | 'expired' | 'revoked' | 'missing';
+  attestationStatus: 'valid' | 'expired' | 'revoked' | 'missing' | 'invalid';
   keyBindingStatus: 'bound' | 'mismatch' | 'missing';
   riskLevel: 'low' | 'medium' | 'high' | 'unknown';
   revocationStatus: 'active' | 'revoked' | 'suspended';
@@ -38,6 +38,9 @@ export class KyaAgentTrustVerifier implements AgentTrustVerifier {
 
   async verifyAgent(input: Parameters<AgentTrustVerifier['verifyAgent']>[0]): Promise<AgentTrustDecision> {
     const now = this.options.now?.() ?? new Date();
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      throw new DomainError('Agent trust clock must return a valid Date', 'AGENT_TRUST_CLOCK');
+    }
     const store = await this.repo.getStore();
     const agent = store.enrollments.find((item) => item.agentUuid === input.agentId || item.agentId === input.agentId);
     const reasons: string[] = [];
@@ -54,9 +57,16 @@ export class KyaAgentTrustVerifier implements AgentTrustVerifier {
         && item.thumbprint === agent.thumbprint
         && item.status === 'active',
     );
-    const attestationStatus = !credential
-      ? 'missing'
-      : new Date(credential.expiresAt).getTime() <= now.getTime() ? 'expired' : 'valid';
+    let attestationStatus: AgentTrustDecision['attestationStatus'] = 'missing';
+    if (credential) {
+      const issuedAt = Date.parse(credential.issuedAt);
+      const expiresAt = Date.parse(credential.expiresAt);
+      if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt || issuedAt > now.getTime()) {
+        attestationStatus = 'invalid';
+      } else {
+        attestationStatus = expiresAt <= now.getTime() ? 'expired' : 'valid';
+      }
+    }
     if (agent.status !== 'bound') reasons.push(agent.status === 'revoked' ? 'AGENT_REVOKED' : 'AGENT_NOT_ACTIVE');
     if (attestationStatus !== 'valid') reasons.push(`ATTESTATION_${attestationStatus.toUpperCase()}`);
     const expectedThumbprint = agent.thumbprint;

@@ -79,6 +79,9 @@ export type StoredCheckoutDraft = {
   /** Hash-only lineage metadata (no JWT / PII beyond opaque subject reference already in the draft). */
   sub: string;
   aud: string;
+  /** Exact UTC draft window retained before the signed payload is truncated to seconds. */
+  issuedAt: string;
+  expiresAt: string;
   iat: number;
   exp: number;
 };
@@ -89,6 +92,11 @@ export type StoredPaymentDraft = {
   checkoutMandateDraftId: string;
   /** SHA-256 base64url of the exact canonical payment draft payload that was issued. */
   payloadHash: string;
+  /** Exact UTC payment window retained before the signed payload is truncated to seconds. */
+  issuedAt: string;
+  expiresAt: string;
+  iat: number;
+  exp: number;
 };
 
 export interface MandateReplayStore {

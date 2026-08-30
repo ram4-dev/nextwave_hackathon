@@ -276,7 +276,7 @@ describe('autonomy provenance', () => {
       now: () => now,
     })).rejects.toMatchObject({ code: 'OPEN_MANDATE_USER' });
 
-    registry.revoke(paymentMandate.id);
+    await registry.revoke(paymentMandate.id);
     await expect(createAutonomousClosedMandates({
       openCheckoutMandateId: checkoutMandate.id,
       openPaymentMandateId: paymentMandate.id,

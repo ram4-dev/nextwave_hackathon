@@ -73,8 +73,8 @@ const checkoutMandatePayloadSchema = z.object({
   checkout_jwt: z.string().min(1),
   sub: opaqueId,
   aud: opaqueId,
-  iat: z.number().int(),
-  exp: z.number().int(),
+  iat: z.number().int().safe(),
+  exp: z.number().int().safe(),
   nonce,
   jti: opaqueId,
 }).strict();
@@ -89,8 +89,8 @@ const paymentMandatePayloadSchema = z.object({
   payment_instrument: z.object({ id: opaqueId, type: z.string().min(1).max(100), description_masked: z.string().min(5).max(200) }).strict(),
   sub: opaqueId,
   aud: opaqueId,
-  iat: z.number().int(),
-  exp: z.number().int(),
+  iat: z.number().int().safe(),
+  exp: z.number().int().safe(),
   nonce,
   jti: opaqueId,
 }).strict();
@@ -168,23 +168,102 @@ export function createMandateService(options: CreateMandateServiceOptions) {
   const replayStore = options.replayStore ?? new InMemoryMandateReplayStore();
   const maxTtlSeconds = options.maxTtlSeconds ?? 900;
   const credentialProviderAudience = options.credentialProviderAudience ?? 'credential-provider';
-  const now = options.now ?? (() => new Date());
+  const clock = options.now ?? (() => new Date());
   const clockSkewMs = options.clockSkewMs ?? 5_000;
   if (!Number.isSafeInteger(maxTtlSeconds) || maxTtlSeconds <= 0) throw new DomainError('maxTtlSeconds must be positive', 'MANDATE_CONFIG');
   if (!Number.isSafeInteger(clockSkewMs) || clockSkewMs < 0) throw new DomainError('clockSkewMs must be non-negative', 'MANDATE_CONFIG');
 
-  async function verifiedCheckout(checkoutJwt: string, expectedHash: string, transactionId: string): Promise<CheckoutSnapshot> {
+  function currentTime(): Date {
+    const current = clock();
+    if (!(current instanceof Date) || !Number.isFinite(current.getTime())) {
+      throw new DomainError('Mandate service clock must return a valid Date', 'MANDATE_CLOCK');
+    }
+    return current;
+  }
+
+  async function verifiedCheckout(
+    checkoutJwt: string,
+    expectedHash: string,
+    transactionId: string,
+    current: Date,
+  ): Promise<CheckoutSnapshot> {
     if (checkoutHash(checkoutJwt) !== expectedHash) throw new DomainError('Checkout hash does not match JWT', 'CHECKOUT_HASH');
     const value = await options.merchantSigner.verifyCheckout(checkoutJwt);
     const { iss: _iss, aud: _aud, iat: _iat, exp: _exp, nbf: _nbf, jti: _jti, ...checkoutPayload } = value as CheckoutSnapshot & Record<string, unknown>;
     const checked = snapshot(parse(checkoutSchema, checkoutPayload));
     verifyTotals(checked);
-    validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, now(), clockSkewMs);
+    validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, current, clockSkewMs);
     if (checked.transactionId !== transactionId) throw new DomainError('Transaction does not match checkout', 'CHECKOUT_TRANSACTION');
     return checked;
   }
 
-  function assertPaymentLineage(
+  function assertCheckoutDraftPayloadWindow(
+    checkout: CheckoutSnapshot,
+    draft: { iat: number; exp: number },
+  ): void {
+    const checkoutIat = Math.floor(Date.parse(checkout.issuedAt) / 1000);
+    const checkoutExp = Math.floor(Date.parse(checkout.expiresAt) / 1000);
+    if (draft.iat < checkoutIat || draft.exp > checkoutExp || draft.exp <= draft.iat) {
+      throw new DomainError('Checkout draft window must fall entirely within the merchant checkout JWT window', 'DRAFT_LINEAGE');
+    }
+  }
+
+  function assertCheckoutDraftWindow(
+    checkout: CheckoutSnapshot,
+    draft: { issuedAt: string; expiresAt: string },
+  ): void {
+    const parseWindow = (value: { issuedAt: string; expiresAt: string }) => {
+      if (typeof value.issuedAt !== 'string' || typeof value.expiresAt !== 'string') {
+        throw new DomainError('Checkout draft window metadata is invalid', 'DRAFT_LINEAGE');
+      }
+      const issuedAt = Date.parse(value.issuedAt);
+      const expiresAt = Date.parse(value.expiresAt);
+      if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt) {
+        throw new DomainError('Checkout draft window metadata is invalid', 'DRAFT_LINEAGE');
+      }
+      return { issuedAt, expiresAt };
+    };
+    const checkoutWindow = parseWindow(checkout);
+    const draftWindow = parseWindow(draft);
+    if (
+      draftWindow.issuedAt < checkoutWindow.issuedAt
+      || draftWindow.expiresAt > checkoutWindow.expiresAt
+    ) {
+      throw new DomainError('Checkout draft window must fall entirely within the merchant checkout JWT window', 'DRAFT_LINEAGE');
+    }
+  }
+
+  function assertPaymentDraftWindow(
+    checkoutDraft: NonNullable<Awaited<ReturnType<MandateReplayStore['getCheckoutDraft']>>>,
+    payment: { issuedAt: string; expiresAt: string },
+  ): void {
+    if (
+      typeof checkoutDraft.issuedAt !== 'string'
+      || typeof checkoutDraft.expiresAt !== 'string'
+      || typeof payment.issuedAt !== 'string'
+      || typeof payment.expiresAt !== 'string'
+    ) {
+      throw new DomainError('Payment draft window metadata is invalid', 'DRAFT_LINEAGE');
+    }
+    const checkoutIssuedAt = Date.parse(checkoutDraft.issuedAt);
+    const checkoutExpiresAt = Date.parse(checkoutDraft.expiresAt);
+    const paymentIssuedAt = Date.parse(payment.issuedAt);
+    const paymentExpiresAt = Date.parse(payment.expiresAt);
+    if (
+      !Number.isFinite(checkoutIssuedAt)
+      || !Number.isFinite(checkoutExpiresAt)
+      || !Number.isFinite(paymentIssuedAt)
+      || !Number.isFinite(paymentExpiresAt)
+      || checkoutExpiresAt <= checkoutIssuedAt
+      || paymentExpiresAt <= paymentIssuedAt
+      || paymentIssuedAt < checkoutIssuedAt
+      || paymentExpiresAt > checkoutExpiresAt
+    ) {
+      throw new DomainError('Payment draft window must fall within checkout draft window', 'DRAFT_LINEAGE');
+    }
+  }
+
+  function assertPaymentPayloadLineage(
     checkoutDraft: NonNullable<Awaited<ReturnType<MandateReplayStore['getCheckoutDraft']>>>,
     payment: { sub: string; aud: string; iat: number; exp: number },
   ): void {
@@ -194,33 +273,48 @@ export function createMandateService(options: CreateMandateServiceOptions) {
     if (payment.aud !== checkoutDraft.aud) {
       throw new DomainError('Payment draft audience must match checkout draft', 'DRAFT_LINEAGE');
     }
-    if (payment.iat < checkoutDraft.iat || payment.exp > checkoutDraft.exp || payment.exp <= payment.iat) {
+    if (
+      !Number.isSafeInteger(checkoutDraft.iat)
+      || !Number.isSafeInteger(checkoutDraft.exp)
+      || checkoutDraft.exp <= checkoutDraft.iat
+      || payment.iat < checkoutDraft.iat
+      || payment.exp > checkoutDraft.exp
+      || payment.exp <= payment.iat
+    ) {
       throw new DomainError('Payment draft window must fall within checkout draft window', 'DRAFT_LINEAGE');
     }
   }
 
   return {
     async createMerchantCheckout(input: CreateMerchantCheckoutInput) {
+      const current = currentTime();
       const checked = snapshot(parse(checkoutSchema, input));
-      validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, now(), clockSkewMs);
+      validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, current, clockSkewMs);
       verifyTotals(checked);
       const checkoutJwt = await options.merchantSigner.signCheckout(checked);
       const hash = checkoutHash(checkoutJwt);
       return {
         checkoutJwt, checkoutHash: hash, transactionId: checked.transactionId, expiresAt: checked.expiresAt, checkoutSnapshot: structuredClone(checked),
-        auditMetadata: { source: checked.source, merchantId: checked.merchant.id, createdAt: now().toISOString(), checkoutHash: hash },
+        auditMetadata: { source: checked.source, merchantId: checked.merchant.id, createdAt: current.toISOString(), checkoutHash: hash },
       };
     },
 
     async createCheckoutMandateDraft(input: CreateCheckoutMandateDraftInput) {
+      const current = currentTime();
       const checked = parse(checkoutDraftSchema, input);
-      validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, now(), clockSkewMs);
-      await verifiedCheckout(checked.checkoutJwt, checked.checkoutHash, checked.transactionId);
+      validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, current, clockSkewMs);
+      const checkout = await verifiedCheckout(checked.checkoutJwt, checked.checkoutHash, checked.transactionId, current);
+      assertCheckoutDraftWindow(checkout, checked);
+      const draftWindow = {
+        iat: Math.floor(Date.parse(checked.issuedAt) / 1000),
+        exp: Math.floor(Date.parse(checked.expiresAt) / 1000),
+      };
+      assertCheckoutDraftPayloadWindow(checkout, draftWindow);
       await replayStore.consumeNonce(checked.transactionId, checked.nonce);
       const id = `checkout_draft_${randomUUID().replace(/-/g, '')}`;
       const unsignedMandatePayload: CheckoutMandatePayload = {
         vct: 'mandate.checkout.1', transaction_id: checked.transactionId, checkout_hash: checked.checkoutHash, checkout_jwt: checked.checkoutJwt,
-        sub: checked.userReference, aud: credentialProviderAudience, iat: Math.floor(Date.parse(checked.issuedAt) / 1000), exp: Math.floor(Date.parse(checked.expiresAt) / 1000), nonce: checked.nonce, jti: id,
+        sub: checked.userReference, aud: credentialProviderAudience, ...draftWindow, nonce: checked.nonce, jti: id,
       };
       await replayStore.rememberCheckoutDraft(id, {
         transactionId: checked.transactionId,
@@ -228,6 +322,8 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         payloadHash: sha256Base64Url(canonicalJson(unsignedMandatePayload)),
         sub: unsignedMandatePayload.sub,
         aud: unsignedMandatePayload.aud,
+        issuedAt: checked.issuedAt,
+        expiresAt: checked.expiresAt,
         iat: unsignedMandatePayload.iat,
         exp: unsignedMandatePayload.exp,
       });
@@ -240,10 +336,11 @@ export function createMandateService(options: CreateMandateServiceOptions) {
     },
 
     async createPaymentMandateDraft(input: CreatePaymentMandateDraftInput) {
+      const current = currentTime();
       const checked = parse(paymentDraftSchema, input);
-      validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, now(), clockSkewMs);
+      validatePeriod(checked.issuedAt, checked.expiresAt, maxTtlSeconds, current, clockSkewMs);
       rejectSensitiveInstrument(checked.paymentInstrument);
-      const checkout = await verifiedCheckout(checked.checkoutJwt, checked.checkoutHash, checked.transactionId);
+      const checkout = await verifiedCheckout(checked.checkoutJwt, checked.checkoutHash, checked.transactionId, current);
       assertPayeeMatchesMerchant(checked.payee, checkout.merchant);
       if (checkout.totals.totalMinor !== checked.paymentAmount.amountMinor || checkout.totals.currency !== checked.paymentAmount.currency) {
         throw new DomainError('Payment amount must exactly match checkout', 'PAYMENT_AMOUNT');
@@ -252,9 +349,11 @@ export function createMandateService(options: CreateMandateServiceOptions) {
       if (!checkoutDraft || checkoutDraft.transactionId !== checked.transactionId || checkoutDraft.checkoutHash !== checked.checkoutHash) {
         throw new DomainError('Checkout mandate reference is invalid', 'CHECKOUT_MANDATE_REFERENCE');
       }
+      assertCheckoutDraftWindow(checkout, checkoutDraft);
+      assertPaymentDraftWindow(checkoutDraft, checked);
       const paymentIat = Math.floor(Date.parse(checked.issuedAt) / 1000);
       const paymentExp = Math.floor(Date.parse(checked.expiresAt) / 1000);
-      assertPaymentLineage(checkoutDraft, {
+      assertPaymentPayloadLineage(checkoutDraft, {
         sub: checked.userReference,
         aud: credentialProviderAudience,
         iat: paymentIat,
@@ -273,6 +372,10 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         checkoutHash: checked.checkoutHash,
         checkoutMandateDraftId: checked.checkoutMandateDraftId,
         payloadHash: sha256Base64Url(canonicalJson(unsignedMandatePayload)),
+        issuedAt: checked.issuedAt,
+        expiresAt: checked.expiresAt,
+        iat: unsignedMandatePayload.iat,
+        exp: unsignedMandatePayload.exp,
       });
       return {
         id, mandateType: 'payment' as const, status: 'awaiting_user_signature' as const, unsignedMandatePayload,
@@ -290,9 +393,9 @@ export function createMandateService(options: CreateMandateServiceOptions) {
       expectedUserReference?: string;
       expectedAudience?: string;
     }) {
-      const checkout = await verifiedCheckout(input.checkoutJwt, input.checkoutHash, input.transactionId);
+      const current = currentTime();
+      const checkout = await verifiedCheckout(input.checkoutJwt, input.checkoutHash, input.transactionId, current);
       const expectedAud = input.expectedAudience ?? credentialProviderAudience;
-      const current = now();
 
       if (input.draft.vct === 'mandate.checkout.1') {
         const draft = parse(checkoutMandatePayloadSchema, input.draft);
@@ -310,6 +413,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         if (draft.exp <= draft.iat || draft.exp * 1000 <= current.getTime()) {
           throw new DomainError('Draft is inconsistent or expired', 'DRAFT_CONSISTENCY');
         }
+        assertCheckoutDraftPayloadWindow(checkout, draft);
         if (!draft.nonce || !draft.jti) throw new DomainError('Draft nonce/jti missing', 'DRAFT_CONSISTENCY');
         const storedCheckout = await replayStore.getCheckoutDraft(draft.jti);
         const liveHash = sha256Base64Url(canonicalJson(draft));
@@ -325,6 +429,7 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         ) {
           throw new DomainError('Checkout draft diverges from issued canonical payload', 'DRAFT_CONSISTENCY');
         }
+        assertCheckoutDraftWindow(checkout, storedCheckout);
         return { valid: true as const, transactionId: checkout.transactionId, checkoutHash: input.checkoutHash };
       }
 
@@ -350,7 +455,8 @@ export function createMandateService(options: CreateMandateServiceOptions) {
       if (!checkoutDraft || checkoutDraft.transactionId !== draft.transaction_id || checkoutDraft.checkoutHash !== draft.checkout_hash) {
         throw new DomainError('Checkout draft lineage is invalid', 'DRAFT_CONSISTENCY');
       }
-      assertPaymentLineage(checkoutDraft, draft);
+      assertCheckoutDraftWindow(checkout, checkoutDraft);
+      assertPaymentPayloadLineage(checkoutDraft, draft);
       const storedPayment = await replayStore.getPaymentDraft(draft.jti);
       const liveHash = sha256Base64Url(canonicalJson(draft));
       if (
@@ -359,9 +465,12 @@ export function createMandateService(options: CreateMandateServiceOptions) {
         || storedPayment.checkoutHash !== draft.checkout_hash
         || storedPayment.checkoutMandateDraftId !== draft.checkout_mandate_draft_id
         || storedPayment.payloadHash !== liveHash
+        || storedPayment.iat !== draft.iat
+        || storedPayment.exp !== draft.exp
       ) {
         throw new DomainError('Payment draft diverges from issued canonical payload', 'DRAFT_CONSISTENCY');
       }
+      assertPaymentDraftWindow(checkoutDraft, storedPayment);
       return { valid: true as const, transactionId: checkout.transactionId, checkoutHash: input.checkoutHash };
     },
   };

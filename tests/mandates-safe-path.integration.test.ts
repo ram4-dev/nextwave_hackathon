@@ -44,6 +44,7 @@ function constraints(overrides: Partial<OpenMandateConstraints> = {}): OpenManda
     frequencyWindowSeconds: 3600,
     maxOperationsPerWindow: 10,
     paymentInstrumentAlias: 'instrument_1',
+    allowedPisp: 'pisp_1',
     ...overrides,
   };
 }
@@ -134,6 +135,7 @@ describe('AP2 safe-path integration', () => {
       agentKeyReference: agentSigner.keyId,
       paymentInstrumentAlias: 'instrument_1',
       payeeId: 'merchant_001',
+      pispId: 'pisp_1',
       merchantSigner: merchant,
       agentTrustVerifier: {
         verifyAgent: async () => ({
@@ -148,6 +150,7 @@ describe('AP2 safe-path integration', () => {
     expect(closed.status).toBe('verified');
     expect(closed.closedCheckoutHash).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(closed.closedPaymentHash).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await expect(agentSigner.verify(closed.closedPaymentJws)).resolves.toMatchObject({ pisp_id: 'pisp_1' });
 
     const outbox = new InMemoryMandateAnchorOutbox();
     const client = new FakeMandateAnchorClient();
@@ -187,7 +190,7 @@ describe('AP2 safe-path integration', () => {
           paymentInstrument: { id: 'instrument_1', type: 'card', descriptionMasked: 'Card •••• 1234' },
         },
       }));
-      const cli = await createMandatesFromFile(fixturePath, { NODE_ENV: 'test' });
+      const cli = await createMandatesFromFile(fixturePath, { NODE_ENV: 'test' }, { now: () => now });
       expect(cli.checkoutDraft.mandateType).toBe('checkout');
       expect(cli.paymentDraft?.mandateType).toBe('payment');
     } finally {

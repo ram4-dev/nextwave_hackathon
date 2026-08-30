@@ -28,6 +28,10 @@ export async function createLocalMerchantSigner(input: {
       'MERCHANT_SIGNER_ENV',
     );
   }
+  const clockSkewMs = input.clockSkewMs ?? MERCHANT_CLOCK_SKEW_MS;
+  if (!Number.isSafeInteger(clockSkewMs) || clockSkewMs < 0) {
+    throw new DomainError('clockSkewMs must be a non-negative safe integer', 'MERCHANT_SIGNER_CONFIG');
+  }
   let privateJwk = input.privateJwk;
   if (!privateJwk) {
     privateJwk = await exportJWK((await generateKeyPair('ES256', { extractable: true })).privateKey);
@@ -42,9 +46,13 @@ export async function createLocalMerchantSigner(input: {
   const configuredKid = (privateJwk as JsonWebKey & { kid?: unknown }).kid;
   const kid = typeof configuredKid === 'string' && configuredKid ? configuredKid : 'merchant-local';
   const clock = input.now ?? (() => new Date());
-  const clockSkewMs = input.clockSkewMs ?? MERCHANT_CLOCK_SKEW_MS;
-  if (!Number.isSafeInteger(clockSkewMs) || clockSkewMs < 0) {
-    throw new DomainError('clockSkewMs must be a non-negative integer', 'MERCHANT_SIGNER_CONFIG');
+
+  function checkedNow(): Date {
+    const now = clock();
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      throw new DomainError('Merchant signer clock must return a valid Date', 'MERCHANT_SIGNER_CONFIG');
+    }
+    return now;
   }
 
   return {
@@ -54,6 +62,13 @@ export async function createLocalMerchantSigner(input: {
       const exp = Math.floor(Date.parse(payload.expiresAt) / 1000);
       if (!Number.isFinite(iat) || !Number.isFinite(exp) || exp <= iat) {
         throw new DomainError('Checkout issuedAt/expiresAt produce invalid JWT iat/exp', 'CHECKOUT_JWT');
+      }
+      const now = checkedNow();
+      if (Date.parse(payload.issuedAt) > now.getTime() + clockSkewMs) {
+        throw new DomainError('Checkout issuedAt is in the future beyond allowed clock skew', 'CHECKOUT_JWT_FUTURE');
+      }
+      if (iat * 1000 > now.getTime() + clockSkewMs) {
+        throw new DomainError('Checkout JWT iat would be in the future beyond allowed clock skew', 'CHECKOUT_JWT_FUTURE');
       }
       return new SignJWT(payload as unknown as Record<string, unknown>)
         .setProtectedHeader({ alg: 'ES256', kid, typ: 'JWT' })
@@ -65,7 +80,7 @@ export async function createLocalMerchantSigner(input: {
     },
     async verifyCheckout(jwt) {
       try {
-        const now = clock();
+        const now = checkedNow();
         const { payload, protectedHeader } = await jwtVerify(jwt, publicKey, {
           issuer: input.issuer,
           audience,

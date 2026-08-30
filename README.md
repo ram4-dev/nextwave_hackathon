@@ -160,15 +160,15 @@ npm run catalog:load
 The domain library at `src/mandates` creates an immutable merchant ES256 Checkout JWT, its SHA-256 base64url hash, unsigned AP2 checkout/payment draft payloads, Trusted Surface activation, deterministic policy reservation, and a hash-only anchor outbox boundary. It does **not** create payments, final user-authorized processor charges, or real chain writes.
 
 ```bash
-npm run mandates:create -- --input ./fixtures/validated-checkout.json
+NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json --materialize-demo-clock
 npm run contracts:compile
 npm run contracts:test
 ```
 
-`MERCHANT_SIGNING_PRIVATE_JWK` may provide a P-256 private JWK in development/test. Production rejects the local signer; inject a KMS/HSM `MerchantSigner` instead. CLI requires an explicit environment:
+`MERCHANT_SIGNING_PRIVATE_JWK` may provide a P-256 private JWK in development/test. Production rejects the local signer; inject a KMS/HSM `MerchantSigner` instead. CLI requires an explicit environment. Supplied fixture timestamps are preserved by default (fail-closed against the real clock). The bundled static demo fixture uses absolute future timestamps and therefore needs the explicit demo flag:
 
 ```bash
-NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json
+NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json --materialize-demo-clock
 ```
 
 ## License

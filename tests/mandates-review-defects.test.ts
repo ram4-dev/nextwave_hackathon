@@ -88,7 +88,7 @@ describe('review defect 1: complete draft canonical payload hash', () => {
     for (const draft of checkoutCases) {
       await expect(sut.verifyDraftConsistency({
         checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_d1', draft,
-      })).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|CHECKOUT_HASH/) });
+      })).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|DRAFT_LINEAGE|CHECKOUT_HASH/) });
     }
 
     const paymentCases = [
@@ -109,7 +109,7 @@ describe('review defect 1: complete draft canonical payload hash', () => {
 });
 
 describe('review defect 2: shared default policy ledger', () => {
-  it('rejects 60+60 against budget 100 across two closures without injected ledger', async () => {
+  it('returns exact global balance after two reservations, then rejects exhaustion without an injected ledger', async () => {
     const agentSigner = await createTestAgentMandateSigner('test');
     const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
     const registry = new InMemoryOpenMandateRegistry();
@@ -171,8 +171,11 @@ describe('review defect 2: shared default policy ledger', () => {
       });
     }
 
-    await close('txn_budget_a', 'pay_a', 60);
-    await expect(close('txn_budget_b', 'pay_b', 60)).rejects.toMatchObject({ code: 'POLICY_BUDGET' });
+    const first = await close('txn_budget_a', 'pay_a', 30);
+    expect(first.policy.remainingBudgetMinor).toBe(70);
+    const second = await close('txn_budget_b', 'pay_b', 20);
+    expect(second.policy.remainingBudgetMinor).toBe(50);
+    await expect(close('txn_budget_c', 'pay_c', 60)).rejects.toMatchObject({ code: 'POLICY_BUDGET' });
   });
 });
 
@@ -268,6 +271,7 @@ describe('review defect 4: key binding and independent JWS verify', () => {
       jws: altered,
       publicKeyJwk,
       expectedPayload: expected,
+      expectedKeyId: 'agent-required',
     })).rejects.toMatchObject({ code: 'CLOSED_MANDATE_JWS' });
   });
 });

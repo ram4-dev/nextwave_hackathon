@@ -6,13 +6,16 @@ import { network } from 'hardhat';
 describe('MandateAnchor', () => {
   async function deploy() {
     const { viem } = await network.connect();
-    const [admin, pauser, anchorer, outsider] = await viem.getWalletClients();
+    const [admin, pauser, anchorer, outsider, nextAdmin, nextPauser, nextAnchorer] = await viem.getWalletClients();
     const contract = await viem.deployContract('MandateAnchor', [
       admin.account.address,
       pauser.account.address,
       anchorer.account.address,
     ]);
-    return { contract, admin, pauser, anchorer, outsider, publicClient: await viem.getPublicClient() };
+    return {
+      contract, admin, pauser, anchorer, outsider, nextAdmin, nextPauser, nextAnchorer,
+      publicClient: await viem.getPublicClient(),
+    };
   }
 
   const evidence = [
@@ -68,6 +71,52 @@ describe('MandateAnchor', () => {
     await assert.rejects(contract.write.anchor(evidence, { account: admin.account }));
     await assert.rejects(contract.write.anchor(evidence, { account: pauser.account }));
     await assert.rejects(contract.write.anchor(evidence, { account: outsider.account }));
+  });
+
+  it('prevents self and cross grants from accumulating separated roles', async () => {
+    const { contract, admin, pauser, anchorer, nextAdmin } = await deploy();
+    const adminRole = await contract.read.DEFAULT_ADMIN_ROLE();
+    const pauserRole = await contract.read.PAUSER_ROLE();
+    const anchorerRole = await contract.read.ANCHORER_ROLE();
+
+    await assert.rejects(contract.write.grantRole([pauserRole, admin.account.address], { account: admin.account }));
+    await assert.rejects(contract.write.grantRole([anchorerRole, admin.account.address], { account: admin.account }));
+    await assert.rejects(contract.write.grantRole([adminRole, pauser.account.address], { account: admin.account }));
+    await assert.rejects(contract.write.grantRole([anchorerRole, pauser.account.address], { account: admin.account }));
+    await assert.rejects(contract.write.grantRole([adminRole, anchorer.account.address], { account: admin.account }));
+    await assert.rejects(contract.write.grantRole([pauserRole, anchorer.account.address], { account: admin.account }));
+
+    await contract.write.grantRole([adminRole, nextAdmin.account.address], { account: admin.account });
+    await assert.rejects(contract.write.grantRole([pauserRole, nextAdmin.account.address], { account: nextAdmin.account }));
+    await assert.rejects(contract.write.grantRole([anchorerRole, nextAdmin.account.address], { account: nextAdmin.account }));
+    expect(await contract.read.hasRole([adminRole, nextAdmin.account.address])).to.equal(true);
+    expect(await contract.read.hasRole([pauserRole, nextAdmin.account.address])).to.equal(false);
+    expect(await contract.read.hasRole([anchorerRole, nextAdmin.account.address])).to.equal(false);
+  });
+
+  it('allows admin, pauser, and anchorer rotation to clean accounts', async () => {
+    const { contract, admin, pauser, anchorer, nextAdmin, nextPauser, nextAnchorer } = await deploy();
+    const adminRole = await contract.read.DEFAULT_ADMIN_ROLE();
+    const pauserRole = await contract.read.PAUSER_ROLE();
+    const anchorerRole = await contract.read.ANCHORER_ROLE();
+
+    await contract.write.grantRole([adminRole, nextAdmin.account.address], { account: admin.account });
+    await contract.write.grantRole([pauserRole, nextPauser.account.address], { account: nextAdmin.account });
+    await contract.write.grantRole([anchorerRole, nextAnchorer.account.address], { account: nextAdmin.account });
+    await contract.write.revokeRole([pauserRole, pauser.account.address], { account: nextAdmin.account });
+    await contract.write.revokeRole([anchorerRole, anchorer.account.address], { account: nextAdmin.account });
+    await contract.write.revokeRole([adminRole, admin.account.address], { account: nextAdmin.account });
+
+    expect(await contract.read.hasRole([adminRole, admin.account.address])).to.equal(false);
+    expect(await contract.read.hasRole([pauserRole, pauser.account.address])).to.equal(false);
+    expect(await contract.read.hasRole([anchorerRole, anchorer.account.address])).to.equal(false);
+    expect(await contract.read.hasRole([adminRole, nextAdmin.account.address])).to.equal(true);
+    expect(await contract.read.hasRole([pauserRole, nextPauser.account.address])).to.equal(true);
+    expect(await contract.read.hasRole([anchorerRole, nextAnchorer.account.address])).to.equal(true);
+
+    await contract.write.pause({ account: nextPauser.account });
+    await contract.write.unpause({ account: nextPauser.account });
+    await contract.write.anchor(evidence, { account: nextAnchorer.account });
   });
 
   it('rejects zero hashes for every evidence field', async () => {
