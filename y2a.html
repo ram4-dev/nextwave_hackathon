@@ -39,6 +39,7 @@ button{font:inherit;cursor:pointer}::selection{background:var(--yel)}
 @keyframes bl{0%,100%{opacity:1}50%{opacity:.2}}
 @media(prefers-reduced-motion:reduce){.blink{animation:none}}
 main{padding:26px 32px 70px;max-width:1200px}
+main.wide{max-width:1440px}
 h1{margin:0;font-size:23px;font-weight:600;letter-spacing:-.024em}
 h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.018em}
 .sub{margin:5px 0 0;font-size:14px;color:var(--mut)}
@@ -197,12 +198,13 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.018em}
 .caret{display:inline-block;width:7px;height:15px;background:var(--ink);vertical-align:-2px;margin-left:2px;animation:bl 1s steps(2) infinite}
 /* guided tour */
 .tour-target{position:relative;z-index:76!important;background:var(--yel-s)!important;color:var(--ink)!important;border-left-color:var(--yel)!important}
+.tour-focus{position:relative!important;z-index:76!important;background:#fff!important;border-radius:12px!important;box-shadow:0 0 0 3px var(--yel),0 20px 50px rgba(2,13,20,.35)!important}
 .tourshade{position:fixed;inset:0;background:rgba(2,13,20,.42);z-index:74}
-.tourcard{position:fixed;z-index:77;left:50%;bottom:28px;transform:translateX(-50%);width:min(480px,calc(100vw - 32px));background:#fff;border-radius:12px;box-shadow:0 24px 64px rgba(2,13,20,.28);padding:20px}
-.tourmeta{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--mut2)}
-.tourcard h2{margin:8px 0 6px;font-size:20px}.tourcard p{margin:0;color:var(--ink2);font-size:13.5px;line-height:1.55}
-.touractions{display:flex;align-items:center;gap:8px;margin-top:18px}.touractions .skip{margin-right:auto;border:0;background:none;color:var(--mut);font-size:12px;padding:7px 2px}
-@media(max-width:640px){.tourcard{bottom:16px;padding:18px}.tourcard h2{font-size:18px}}
+.tourcard{position:fixed;z-index:77;left:50%;top:50%;transform:translate(-50%,-50%);width:min(640px,calc(100vw - 32px));background:#fff;border-radius:14px;box-shadow:0 30px 80px rgba(2,13,20,.32);padding:32px}
+.tourmeta{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:.12em;color:var(--mut2)}
+.tourcard h2{margin:10px 0 10px;font-size:27px}.tourcard p{margin:0;color:var(--ink2);font-size:15.5px;line-height:1.6}
+.touractions{display:flex;align-items:center;gap:10px;margin-top:26px}.touractions .skip{margin-right:auto;border:0;background:none;color:var(--mut);font-size:12.5px;padding:7px 2px}
+@media(max-width:640px){.tourcard{width:calc(100vw - 32px);padding:20px}.tourcard h2{font-size:20px}}
 </style>
 
 </head>
@@ -328,7 +330,10 @@ async function boot(){
     owner:'0x'+Array.from({length:40},()=>'0123456789abcdef'[Math.floor(Math.random()*16)]).join(''),
     agentURI:'https://kya.y2a.dev/agents/AG_LOCAL_001/v1',credential:{id:'kya_001',status:'active'}};
   S.attacker={name:'Concierge Agent',agentId:5512,jkt:S.keys.attacker.jkt,credential:{status:'active'}};
-  S.cards=[{id:'PM_001',customer:'CUS_001',brand:'VISA',last4:'4242',token:'tok_'+uid(''),exp:'09/29',added:new Date(Date.now()-9*864e5)}];
+  S.cards=[{id:'PM_001',customer:'CUS_001',brand:'VISA',last4:'4242',token:'tok_'+uid(''),exp:'09/29',added:new Date(Date.now()-9*864e5)},
+    {id:'PM_002',customer:'CUS_001',brand:'MC',last4:'8831',token:'tok_'+uid(''),exp:'02/28',added:new Date(Date.now()-40*864e5)},
+    {id:'PM_003',customer:'CUS_001',brand:'AMEX',last4:'1005',token:'tok_'+uid(''),exp:'11/27',added:new Date(Date.now()-120*864e5)},
+    {id:'PM_004',customer:'CUS_001',brand:'DISC',last4:'6674',token:'tok_'+uid(''),exp:'06/29',added:new Date(Date.now()-4*864e5)}];
   S.ledger=seedLedger();S.booted=true;setTimeout(proposalRationale,50);log('platform.ready',{curve:'P-256',ledger:S.ledger.length});render();
 }
 
@@ -675,7 +680,7 @@ function vOverview(){
   const m=S.mandate,a=S.agent,c=S.cards[0];
   return `<div class="hd"><div><h1>Overview</h1><p class="sub">One verified person, one bound agent, one signed mandate.</p></div>
     <button class="btn sm" data-act="ceremony" style="margin-left:auto">Show verification</button></div>
-  <div class="grid3">
+  <div class="grid3${tf('overview')}">
     <div class="card pad"><div style="display:flex;align-items:center;margin-bottom:14px"><p class="lbl" style="margin:0">Identity</p>
       <span style="margin-left:auto"><span class="pill ok">${ico.ok} VERIFIED</span></span></div>
       <p style="margin:0;font-size:17px;font-weight:600">${esc(S.principal.name)}</p>
@@ -691,7 +696,7 @@ function vOverview(){
       <p style="margin:0;font-size:17px;font-weight:600">${c.brand} •••• ${c.last4}</p>
       <p class="mono" style="margin:3px 0 0;font-size:12px;color:var(--mut)">${c.id} · ${c.customer}</p>
       <p style="margin:14px 0 0;font-size:12px;color:var(--mut2);line-height:1.45">The agent never sees the card. The mandate binds this token and no other.</p></div></div>
-  <div style="margin-top:24px"><p class="lbl">Intent Mandate</p>
+  <div style="margin-top:24px" class="${tf('overview').trim()}"><p class="lbl">Intent Mandate</p>
   ${m?`<div class="card pad">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <div><h2>${esc(m.title)}</h2><p class="mono" style="margin:2px 0 0;font-size:11.5px;color:var(--mut2)">${m.id} · ES256 · ${m.pm.id}</p></div>
@@ -712,6 +717,10 @@ function vOverview(){
 }
 function vMandates(){return S.draft?vDraft():S.mandate?vMandateDetail():(S.writeOwn?vBuilder():vProposal());}
 
+const OTHER_MANDATES=[
+  {id:'IM_014',title:'Grocery delivery',category:'Groceries · Rappi, PedidosYa',ceiling:85.00,used:'4 / 10',until:'2026-11-30',status:'ACTIVE'},
+  {id:'IM_009',title:'Software subscriptions',category:'SaaS renewals · recurring',ceiling:40.00,used:'3 / 3',until:'2026-05-01',status:'REVOKED'}
+];
 function vProposal(){
   const p=deriveProposal();
   if(!p)return vBuilder();
@@ -721,7 +730,7 @@ function vProposal(){
     <span class="pill yel" style="margin-left:auto">PROPOSED · NOT ACTIVE</span></div>
 
   <div class="grid2" style="align-items:start">
-    <div class="card" style="border-color:var(--ink);border-width:1.5px">
+    <div class="card${tf('mandates')}" style="border-color:var(--ink);border-width:1.5px">
       <div class="pad" style="padding-bottom:10px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
           <p class="lbl" style="margin:0">Suggested mandate</p>
@@ -741,22 +750,19 @@ function vProposal(){
     </div>
 
     <div>
-      <div class="card pad">
-        <p class="lbl">Yuno risk assessment</p>
-        <div class="row"><span class="k">Prior agent purchases</span><span class="v mono">${s.n}</span></div>
-        <div class="row"><span class="k">Volume settled</span><span class="v mono">${money(s.volume)}</span></div>
-        <div class="row"><span class="k">Disputes</span><span class="v mono" style="color:var(--ok)">${s.disputes}</span></div>
-        <div class="row"><span class="k">Highest ever paid</span><span class="v mono">${money(s.highest)}</span></div>
-        <div class="row"><span class="k">Recommended ceiling</span><span class="v mono">${money(p.spec.max_total_amount)}</span></div>
-        <div style="margin-top:14px;padding:13px 15px;border-radius:8px;background:var(--yel-s)">
-          <p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--ink2)">Only the orchestrator can price this. It sees this cardholder across <b>every</b> merchant — one store cannot.</p></div>
-      </div>
-      <div class="card pad" style="margin-top:16px;background:var(--surf2)">
-        <p class="lbl">Who decided what</p>
-        <div class="row"><span class="k">The numbers</span><span class="v">computed from history</span></div>
-        <div class="row"><span class="k">The wording</span><span class="v">written by the model</span></div>
-        <div class="row"><span class="k">The authority</span><span class="v" style="color:var(--ink);font-weight:600">your signature</span></div>
-        <p style="margin:12px 0 0;font-size:12.5px;line-height:1.55;color:var(--ink2)">A proposal is not a mandate. Nothing here can spend a cent until you press AUTHORIZE — inference is not authorization.</p>
+      <p class="lbl">Your other mandates</p>
+      ${OTHER_MANDATES.map(om=>`<div class="card pad" style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:2px">
+          <div><p style="margin:0;font-size:15px;font-weight:600">${om.title}</p>
+            <p class="mono" style="margin:2px 0 0;font-size:11px;color:var(--mut2)">${om.id} · ${om.category}</p></div>
+          <span style="margin-left:auto">${om.status==='ACTIVE'?'<span class="pill ok"><span class="dot"></span>ACTIVE</span>':'<span class="pill bad"><span class="dot"></span>REVOKED</span>'}</span></div>
+        <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line2)">
+          <div><p class="lbl" style="margin-bottom:3px">Ceiling</p><b class="mono" style="font-size:13.5px">${money(om.ceiling)}</b></div>
+          <div><p class="lbl" style="margin-bottom:3px">Used</p><b class="mono" style="font-size:13.5px">${om.used}</b></div>
+          <div><p class="lbl" style="margin-bottom:3px">${om.status==='ACTIVE'?'Valid until':'Revoked'}</p><b class="mono" style="font-size:13.5px">${om.until}</b></div></div>
+      </div>`).join('')}
+      <div class="card pad" style="background:var(--surf2)">
+        <p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--ink2)">Each mandate is scoped narrowly — flights, groceries, subscriptions. None can act outside its own limits, and a proposal is not a mandate: nothing here can spend a cent until you press AUTHORIZE.</p>
       </div>
     </div>
   </div>`;
@@ -771,7 +777,7 @@ function vDraft(){
     <div><p class="lbl">You said</p><p class="quote">"${esc(d.source)}"</p><div class="arrowdown">${ico.dn}</div>
       <div class="card pad" style="background:var(--surf2)"><p class="lbl" style="margin-bottom:8px">This screen is where intent is validated</p>
       <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--ink2)">You are looking at exactly what the model understood. It <b>drafts</b>, you <b>sign</b>, the kernel <b>enforces</b>. A model that misreads you cannot create authority — you would see it here first.</p></div></div>
-    <div class="card"><div class="pad" style="padding-bottom:6px">
+    <div class="card${tf('mandates')}"><div class="pad" style="padding-bottom:6px">
       <p style="margin:0 0 4px;font-size:17px;font-weight:600">${esc(S.agent.name)} <span class="mono" style="font-size:12px;color:var(--mut2)">#${S.agent.agentId}</span></p>
       <p class="lbl" style="margin:14px 0 6px">Can purchase</p>
       ${r('Category','<b>'+esc(d.category)+'</b>')}
@@ -788,7 +794,7 @@ function vMandateDetail(){
   const m=S.mandate,cc=m.claims.constraints;
   return `<div class="hd"><div><h1>${esc(m.title)}</h1><p class="sub mono" style="font-size:12.5px">${m.id} · ES256 · ${m.pm.brand} ••${m.pm.last4}</p></div>
     <span style="margin-left:auto">${m.status==='ACTIVE'?'<span class="pill ok"><span class="dot"></span>ACTIVE</span>':'<span class="pill bad"><span class="dot"></span>REVOKED</span>'}</span></div>
-  <div class="grid2">
+  <div class="grid2${tf('mandates')}">
     <div class="card pad"><p class="lbl">Constraints</p>
       <div class="row"><span class="k">Maximum total</span><span class="v mono">${money(cc.max_total_amount)}</span></div>
       <div class="row"><span class="k">Currency</span><span class="v mono">${cc.currency}</span></div>
@@ -971,7 +977,7 @@ function vTxn(){
     <button class="btn" data-act="drawer">Try to break it</button></div>`;
 }
 function vCards(){
-  return `<div class="hd"><div><h1>Payment methods</h1><p class="sub">Enrolled against a Yuno customer. Card data never reaches the agent, or us.</p></div>
+  return `<div class="hd"><div><h1>Payments</h1><p class="sub">Enrolled against a Yuno customer. Card data never reaches the agent, or us.</p></div>
     <button class="btn dark sm" data-act="addcard" style="margin-left:auto">Add payment method</button></div>
   ${S.addingCard?`<div class="card pad" style="max-width:440px;margin-bottom:18px">
     <div class="fld"><label>Card number</label><input id="cnum" value="${esc(S.cardNum)}"></div>
@@ -981,7 +987,7 @@ function vCards(){
       <p style="margin:0;font-size:12.5px;line-height:1.5;color:var(--ink2)">On submit: <span class="mono">yuno.customer.upsert()</span> → <span class="mono">paymentMethod.enroll()</span>. A token comes back; the PAN and CVV are discarded.</p></div>
     <div style="display:flex;gap:9px"><button class="btn dark" data-act="savecard" style="flex:1">Tokenize &amp; save</button>
       <button class="btn" data-act="cancelcard">Cancel</button></div></div>`:''}
-  <div style="display:flex;flex-direction:column;gap:12px">${S.cards.map(c=>`<div class="pmcard">
+  <div style="display:flex;flex-direction:column;gap:12px" class="${tf('cards').trim()}">${S.cards.map(c=>`<div class="pmcard">
     <span class="brand">${c.brand}</span>
     <div><p style="margin:0;font-size:15px;font-weight:600">•••• •••• •••• ${c.last4}</p>
       <p class="mono" style="margin:2px 0 0;font-size:11.5px;color:var(--mut2)">${c.id} · ${c.customer} · ${c.token}</p></div>
@@ -995,7 +1001,7 @@ function vActivity(){return `<div class="hd"><div><h1>Activity</h1><p class="sub
 function vAgents(){
   const a=S.agent;
   return `<div class="hd"><div><h1>Agents</h1><p class="sub">Each agent holds its own key. Authority comes only from a mandate.</p></div></div>
-  <div class="card pad"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px">
+  <div class="card pad${tf('agents')}"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px">
       <div><h2>${esc(a.name)}</h2><p class="mono" style="margin:2px 0 0;font-size:11.5px;color:var(--mut2)">${a.uuid}</p></div>
       <span style="margin-left:auto">${a.credential.status==='active'?'<span class="pill ok">'+ico.ok+' KYA ACTIVE</span>':'<span class="pill bad">CREDENTIAL SUSPENDED</span>'}</span></div>
     <div class="grid2">
@@ -1024,11 +1030,11 @@ function vSnippets(){
   ];
   return `<div class="hd"><div><h1>MCP Snippets</h1><p class="sub">Connect your model to Y2A through Model Context Protocol.</p></div></div>
     <div class="card pad" style="margin-bottom:16px;background:var(--surf2)"><p class="lbl">Endpoint</p><p class="mono" style="margin:0;font-size:13px">${endpoint}</p><p style="margin:8px 0 0;color:var(--mut);font-size:13px">Use your Y2A key as a Bearer token to authenticate MCP calls.</p></div>
-    <div class="grid3">${snippets.map(([name,library,code])=>`<section class="card" style="overflow:hidden"><div class="pad" style="padding-bottom:12px"><h2>${name}</h2><p class="sub mono" style="font-size:11px">${library}</p></div><pre style="margin:0;padding:16px;overflow:auto;background:var(--ink);color:#fff;font:11px/1.6 'JetBrains Mono',monospace;min-height:292px"><code>${esc(code)}</code></pre></section>`).join('')}</div>`;
+    <div class="grid3${tf('snippets')}">${snippets.map(([name,library,code])=>`<section class="card" style="overflow:hidden"><div class="pad" style="padding-bottom:12px"><h2>${name}</h2><p class="sub mono" style="font-size:11px">${library}</p></div><pre style="margin:0;padding:16px;overflow:auto;background:var(--ink);color:#fff;font:11px/1.6 'JetBrains Mono',monospace;min-height:292px"><code>${esc(code)}</code></pre></section>`).join('')}</div>`;
 }
 function table(rows,showM){
   if(!rows.length)return '<div class="card pad" style="text-align:center;color:var(--mut)">Nothing here yet.</div>';
-  return `<div class="tblwrap"><table class="tbl"><thead><tr><th>Time</th>${showM?'<th>Merchant</th>':''}<th>Agent</th><th>Principal</th><th>Amount</th><th>Decision</th><th>Reason</th><th>Evidence</th></tr></thead><tbody>
+  return `<div class="tblwrap${tf('activity')}"><table class="tbl"><thead><tr><th>Time</th>${showM?'<th>Merchant</th>':''}<th>Agent</th><th>Principal</th><th>Amount</th><th>Decision</th><th>Reason</th><th>Evidence</th></tr></thead><tbody>
   ${rows.map(r=>`<tr class="${r.live?'live':''}" data-act="detail" data-id="${r.id}">
     <td class="mono" style="color:var(--mut)">${hhmm(r.ts)}${r.live?' <span class="pill yel" style="margin-left:5px">LIVE</span>':''}</td>
     ${showM?`<td>${r.merchantName}</td>`:''}
@@ -1143,15 +1149,17 @@ function vLogin(){
 }
 
 /* ---------- shell ---------- */
-const NAV=[['overview','Overview'],['agents','My Agent'],['mandates','Mandates'],['cards','Cards'],['activity','Activity'],['snippets','MCP Snippets']];
+const NAV=[['overview','Overview'],['agents','My Agent'],['mandates','Mandates'],['cards','Payments'],['activity','Activity'],['snippets','MCP Snippets']];
 const TOUR=[
   ['overview','Overview','Get a quick snapshot of your verified identity, connected agent, payment method, and active mandate.'],
   ['agents','My Agent','Review the agent that can act for you, its credential status, identity binding, and cryptographic key details.'],
   ['mandates','Mandates','Create, inspect, and revoke the rules that define exactly what your agent is allowed to purchase.'],
-  ['cards','Cards','Manage payment methods that can be bound to a mandate. Your agent never receives raw card details.'],
+  ['cards','Payments','Manage payment methods that can be bound to a mandate. Your agent never receives raw card details.'],
   ['activity','Activity','Review every purchase attempt made by your agent, including approved, blocked, and escalated decisions.'],
   ['snippets','MCP Snippets','Copy ready-to-adapt examples for connecting Claude, Gemini, or ChatGPT to Y2A through MCP.']
 ];
+/* returns ' tour-focus' when `view` is the view the active tour step is spotlighting, else '' */
+function tf(view){return S.tour!==null&&TOUR[S.tour][0]===view?' tour-focus':'';}
 function vTour(){
   const [,title,description]=TOUR[S.tour];
   return `<div class="tourshade" aria-hidden="true"></div><section class="tourcard" role="dialog" aria-modal="true" aria-label="Guided tour">
@@ -1179,7 +1187,7 @@ function render(){
         <span class="mono" style="font-size:11px;color:var(--mut2)">P-256 · ES256</span>
         <button class="btn sm" data-act="reset">Reset</button>
         <button class="btn sm" data-act="signout">Sign out</button></span></header>
-      <main>${body}</main></div>
+      <main class="${S.view==='snippets'&&!S.detail?'wide':''}">${body}</main></div>
   </div>${S.drawer?vDrawer():''}${S.cer?vCeremony():''}${S.tour!==null?vTour():''}`;
   document.querySelectorAll('[data-tip]').forEach(el=>{const tip=document.getElementById('tip');
     el.addEventListener('mousemove',e=>{tip.textContent=el.dataset.tip;tip.style.opacity='1';
