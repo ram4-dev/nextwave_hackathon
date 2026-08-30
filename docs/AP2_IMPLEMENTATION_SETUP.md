@@ -39,7 +39,7 @@ Ejecutá en orden:
 
 1. `supabase/migrations/20260830_create_mandate_policy_ledger.sql`
 2. `supabase/migrations/20260830_create_mandate_requests.sql`
-3. `supabase/migrations/20260830120000_upgrade_mandate_schema_v2.sql` (upgrade idempotente posterior a las create: elimina `prompt`, drop del RPC request viejo y del `reserve_mandate_policy` de 9 args, asegura funciones/índices/grants/RLS nuevos)
+3. `supabase/migrations/20260830235959_upgrade_mandate_schema_v2.sql` (upgrade idempotente posterior a las create: elimina `prompt`, drop del RPC request viejo y del `reserve_mandate_policy` de 9 args, asegura funciones/índices/grants/RLS nuevos)
 
 ## Trusted Surface EIP-712
 
