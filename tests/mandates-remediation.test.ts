@@ -346,7 +346,7 @@ describe('hash-only anchor outbox worker', () => {
     const processed = await worker.processOnce();
     expect(processed?.status).toBe('anchored');
     expect(client.anchored).toHaveLength(1);
-    await expect(outbox.enqueue({ ...evidence, closedCheckoutHash: 'not a jwt but has spaces' }))
+    await expect(outbox.enqueue({ ...evidence, closedCheckoutHash: 'notahashwithnospacesbutinvalidlen' }))
       .rejects.toMatchObject({ code: 'ANCHOR_EVIDENCE' });
   });
 });
