@@ -12,6 +12,8 @@ export default tseslint.config(
       '.codegraph/**',
       '.humanlayer/**',
       'coverage/**',
+      'artifacts/**',
+      'cache/**',
     ],
   },
   js.configs.recommended,

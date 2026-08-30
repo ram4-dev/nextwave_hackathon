@@ -27,12 +27,13 @@ HNSW/lexical y la hidratación SQL se conservan.
 Los pagos de plataforma (F0–F7) son ortogonales al catálogo: API provider-agnostic
 en el Hono raíz, mock REST independiente (`yuno_mock`) y swap-readiness F7 offline.
 
-| Implementado hoy | Extensión de catálogo / pagos | Fuera de alcance |
+| Identidad / mandatos implementados | Catálogo / pagos implementados | Fuera del alcance operativo verificado |
 | --- | --- | --- |
-| Ceremonia de identidad (persona ↔ agente local ↔ KYA; demo + live wiring) | Dataset mock de comercios y productos Juno | Integración con la API real de Juno (catálogo) |
-| Enrollment, credencial KYA, autenticación del agente | Pipeline offline de normalización e indexación vectorial | AP2 y otros protocolos de pago |
-| Binding Principal ID + ERC-8004 + clave local | Búsqueda semántica de productos entre merchants | Deploy de registry propio; Hardhat/Foundry en runtime |
-| Consumo del Identity Registry curated | Pagos F0–F7 (platform + yuno_mock; sandbox live LIVE-NOT-EXECUTED) | Liquidación on-chain de pagos |
+| Ceremonia de identidad (persona ↔ agente local ↔ KYA; demo + live wiring) | Dataset mock de comercios y productos Juno | Integración real de Juno como fuente de catálogo |
+| Enrollment, credencial KYA y autenticación del agente | Feeds ACP, pipeline incremental e indexación vectorial | Deploy de un registry ERC-8004 propio |
+| Binding Principal ID + ERC-8004 + clave local; consumo del Identity Registry curated | Búsqueda semántica con precio, disponibilidad y frescura | KYC real y escrituras públicas sin credenciales/autorización explícita |
+| Drafts y mandatos AP2 locales (JWT merchant, firma Trusted Surface, política, anclaje hash-only) | Pagos F0–F7 (plataforma + `yuno_mock`; readiness live offline) | Ejecución AP2 de cargos y escrituras reales del worker de anclaje |
+| | Enrollment/tokenización, autorización, captura, cancelación y refund simulados por `yuno_mock` | Yuno sandbox/production y liquidación comercial real (**LIVE-NOT-EXECUTED**) |
 
 **Actores de la ceremonia (4):** Usuario · Agente local · Plataforma KYA · Proveedor KYC.  
 ERC-8004 es **infraestructura interna** de Plataforma KYA, no un quinto actor de negocio.
@@ -176,8 +177,9 @@ cada resultado con el merchant que lo vende y su precio vigente en el snapshot.
 - Integración con Juno real o datos comerciales reales en esta fase.
 - Portal de onboarding, login o autoservicio para merchants; el alta y la
   entrega de API keys serán manuales en el MVP.
-- Checkout, creación de órdenes, captura de pago o liquidación.
-- AP2 u otros protocolos de pago.
+- Checkout de catálogo u orquestación de órdenes comerciales que conecte la búsqueda con pagos.
+- Ejecución contra procesadores live, liquidación comercial real o promoción automática a Yuno sandbox/production.
+- Protocolos de pago AP2 más allá de la biblioteca local de drafts/mandatos hash-only.
 - Crawling o embeddings en tiempo real dentro del request de búsqueda.
 - KYC, autenticación o autorización del endpoint de búsqueda en este slice.
 - Reputation Registry / Validation Registry de ERC-8004.
@@ -475,6 +477,7 @@ Spec técnica: [`docs/JUNO_CATALOG_SEARCH_SPEC.md`](./docs/JUNO_CATALOG_SEARCH_S
 - [ ] Transfer: suspende hasta Principal verificado activo + aprobación explícita; KYC solo si falta o expiró.
 - [ ] Cambio de PC: nueva clave + revocación; KYC solo si política/expiración.
 - [ ] La extensión de catálogo no acopla el núcleo de identidad KYA a checkout o pagos.
+- [x] Drafts/mandatos AP2 locales: Checkout JWT ES256, Trusted Surface, política y outbox hash-only; sin pago ni escritura on-chain real.
 - [ ] Direcciones curated reverificadas antes de integrar/promover.
 
 ### Extensión de catálogo Juno (implementada)
@@ -537,4 +540,4 @@ Spec técnica: [`docs/JUNO_CATALOG_SEARCH_SPEC.md`](./docs/JUNO_CATALOG_SEARCH_S
 
 ---
 
-*Documento autocontenido de arquitectura. KYA cubre identidad y autenticación; la búsqueda mock implementada demuestra descubrimiento y la arquitectura ACP especificada traslada la fuente de catálogo a los merchants. Checkout, ejecución de pagos, liquidación y AP2 permanecen fuera de alcance.*
+*Documento autocontenido de arquitectura. KYA cubre identidad y autenticación; la búsqueda mock/ACP demuestra descubrimiento de catálogo; Payments/Yuno F0–F7 cubre el API provider-agnostic y su ejecución local contra `yuno_mock`; la biblioteca AP2 cubre drafts/mandatos y anclaje hash-only. La ejecución live, la liquidación comercial y las escrituras on-chain reales del worker permanecen fuera de alcance operativo.*

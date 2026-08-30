@@ -1,6 +1,6 @@
 # KYA — Know Your Agent
 
-Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). The current implementation covers that identity ceremony, a local mock Juno catalog search over PostgreSQL/pgvector, and provider-agnostic platform payments (F0–F7) against an independent `yuno_mock` REST process. Registered merchants maintain catalog feeds through ACP-compatible endpoints. Live Yuno sandbox, catalog checkout settlement, and AP2 remain out of scope or LIVE-NOT-EXECUTED.
+Local-agent authentication for buyer agents running on a user's PC. KYA binds a **pseudonymous verified Principal** to an **ERC-8004 Agent ID** on Base and to the agent's **local P-256 public key** (`cnf.jkt`). The current implementation covers that identity ceremony, merchant-maintained ACP catalog feeds with local PostgreSQL/pgvector search, provider-agnostic platform payments (F0–F7) against an independent `yuno_mock` REST process, and local AP2 mandate drafts (merchant JWT, Trusted Surface, policy, and hash-only anchor outbox). AP2 does not execute charges; live Yuno sandbox/production processing, catalog checkout orchestration, settlement, and real mandate-anchor chain writes remain out of scope or **LIVE-NOT-EXECUTED**.
 
 **Authoritative product scope:** [`FLOW.md`](./FLOW.md)
 
@@ -173,6 +173,23 @@ npm run yuno:contract:check-generated
 npm run yuno:mock:start   # independent mock on :8080
 npm run yuno:mock:test
 npm run yuno:sandbox:readiness   # offline F7 config gate (never live)
+```
+
+
+## AP2 mandate drafts (local domain library)
+
+The domain library at `src/mandates` creates an immutable merchant ES256 Checkout JWT, its SHA-256 base64url hash, unsigned AP2 checkout/payment draft payloads, Trusted Surface activation, deterministic policy reservation, and a hash-only anchor outbox boundary. It does **not** create payments, final user-authorized processor charges, or real chain writes.
+
+```bash
+NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json --materialize-demo-clock
+npm run contracts:compile
+npm run contracts:test
+```
+
+`MERCHANT_SIGNING_PRIVATE_JWK` may provide a P-256 private JWK in development/test. Production rejects the local signer; inject a KMS/HSM `MerchantSigner` instead. CLI requires an explicit environment. Supplied fixture timestamps are preserved by default (fail-closed against the real clock). The bundled static demo fixture uses absolute future timestamps and therefore needs the explicit demo flag:
+
+```bash
+NODE_ENV=test npm run mandates:create -- --input ./fixtures/validated-checkout.json --materialize-demo-clock
 ```
 
 ## License

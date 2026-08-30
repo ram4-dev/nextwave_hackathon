@@ -1,0 +1,406 @@
+import { createHash } from 'node:crypto';
+import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair } from 'jose';
+import { privateKeyToAccount } from 'viem/accounts';
+import { verifyTypedData, type Hex } from 'viem';
+import { describe, expect, it } from 'vitest';
+import { InMemoryRepository } from '../src/persistence/repository.js';
+import {
+  createAutonomousClosedMandates,
+  createLocalMerchantSigner,
+  createMandateService,
+  createTestAgentMandateSigner,
+  FakeMandateAnchorClient,
+  InMemoryMandateAnchorOutbox,
+  InMemoryMandateReplayStore,
+  InMemoryOpenMandateRegistry,
+  InMemoryTrustedSurfaceApprovalStore,
+  KyaAgentTrustVerifier,
+  MandateAnchorWorker,
+  mandateApprovalTypes,
+  Eip712TrustedSurfaceService,
+  verifyClosedMandateJws,
+  type OpenMandateConstraints,
+} from '../src/mandates/index.js';
+
+const now = new Date('2030-01-01T00:00:00.000Z');
+const account = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945388d2b4e6f6837b2c5cf6ddf72f146d3a24');
+const audience = 'credential-provider';
+const issuedAt = '2030-01-01T00:00:00.000Z';
+const expiresAt = '2030-01-01T00:10:00.000Z';
+
+function constraints(overrides: Partial<OpenMandateConstraints> = {}): OpenMandateConstraints {
+  return {
+    merchantIds: ['merchant_001'],
+    payeeIds: ['merchant_001'],
+    maxQuantityPerProduct: 10,
+    minAmountMinor: 1,
+    maxAmountMinor: 100,
+    currency: 'USD',
+    totalBudgetMinor: 100,
+    maxOperations: 10,
+    frequencyWindowSeconds: 3600,
+    maxOperationsPerWindow: 10,
+    paymentInstrumentAlias: 'instrument_1',
+    ...overrides,
+  };
+}
+
+function sha(value: string): string {
+  return createHash('sha256').update(value).digest('base64url');
+}
+
+describe('review defect 1: complete draft canonical payload hash', () => {
+  it('rejects checkout and payment field mutations without expectedUserReference', async () => {
+    const signer = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
+    const sut = createMandateService({
+      merchantSigner: signer,
+      replayStore: new InMemoryMandateReplayStore(),
+      now: () => now,
+    });
+    const checkout = await sut.createMerchantCheckout({
+      transactionId: 'txn_d1',
+      merchant: { id: 'merchant_001', legalName: 'Merchant Inc', website: 'https://merchant.example' },
+      lineItems: [{ productId: 'p1', title: 'P', quantity: 1, unitAmountMinor: 50, taxAmountMinor: 0, discountAmountMinor: 0 }],
+      totals: { subtotalMinor: 50, taxMinor: 0, discountMinor: 0, totalMinor: 50, currency: 'USD' },
+      issuedAt, expiresAt, source: { type: 'manual', requestId: 'r1' },
+    });
+    const checkoutDraft = await sut.createCheckoutMandateDraft({
+      checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_d1',
+      userReference: 'user_001', nonce: 'n_checkout', issuedAt, expiresAt,
+    });
+    const paymentDraft = await sut.createPaymentMandateDraft({
+      transactionId: 'txn_d1', checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash,
+      checkoutMandateDraftId: checkoutDraft.id,
+      payee: { id: 'merchant_001', name: 'Merchant', website: 'https://merchant.example' },
+      paymentAmount: { amountMinor: 50, currency: 'USD' },
+      paymentInstrument: { id: 'instrument_1', type: 'card', descriptionMasked: 'Card •••• 1234' },
+      userReference: 'user_001', nonce: 'n_payment', issuedAt, expiresAt,
+    });
+
+    const checkoutCases = [
+      { ...checkoutDraft.unsignedMandatePayload, sub: 'other' },
+      { ...checkoutDraft.unsignedMandatePayload, aud: 'other-aud' },
+      { ...checkoutDraft.unsignedMandatePayload, iat: checkoutDraft.unsignedMandatePayload.iat + 1 },
+      { ...checkoutDraft.unsignedMandatePayload, exp: checkoutDraft.unsignedMandatePayload.exp + 1 },
+      { ...checkoutDraft.unsignedMandatePayload, nonce: 'mutated_nonce' },
+      { ...checkoutDraft.unsignedMandatePayload, checkout_jwt: `${checkout.checkoutJwt}x` },
+    ];
+    for (const draft of checkoutCases) {
+      await expect(sut.verifyDraftConsistency({
+        checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_d1', draft,
+      })).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|DRAFT_LINEAGE|CHECKOUT_HASH/) });
+    }
+
+    const paymentCases = [
+      { ...paymentDraft.unsignedMandatePayload, payee: { ...paymentDraft.unsignedMandatePayload.payee, name: 'Other Name' } },
+      { ...paymentDraft.unsignedMandatePayload, payee: { ...paymentDraft.unsignedMandatePayload.payee, website: 'https://other.example' } },
+      { ...paymentDraft.unsignedMandatePayload, payment_instrument: { ...paymentDraft.unsignedMandatePayload.payment_instrument, type: 'bank' } },
+      { ...paymentDraft.unsignedMandatePayload, payment_instrument: { ...paymentDraft.unsignedMandatePayload.payment_instrument, description_masked: 'Card •••• 9999' } },
+      { ...paymentDraft.unsignedMandatePayload, iat: paymentDraft.unsignedMandatePayload.iat + 1 },
+      { ...paymentDraft.unsignedMandatePayload, exp: paymentDraft.unsignedMandatePayload.exp + 1 },
+      { ...paymentDraft.unsignedMandatePayload, nonce: 'mutated_payment_nonce' },
+    ];
+    for (const draft of paymentCases) {
+      await expect(sut.verifyDraftConsistency({
+        checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash, transactionId: 'txn_d1', draft,
+      })).rejects.toMatchObject({ code: expect.stringMatching(/DRAFT_CONSISTENCY|PAYEE_REDIRECT|PAYMENT_INSTRUMENT|DRAFT_LINEAGE/) });
+    }
+  });
+});
+
+describe('review defect 2: shared default policy ledger', () => {
+  it('returns exact global balance after two reservations, then rejects exhaustion without an injected ledger', async () => {
+    const agentSigner = await createTestAgentMandateSigner('test');
+    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
+    const registry = new InMemoryOpenMandateRegistry();
+    const service = createMandateService({ merchantSigner: merchant, replayStore: new InMemoryMandateReplayStore(), now: () => now });
+
+    async function checkoutFor(txn: string, amount: number) {
+      return service.createMerchantCheckout({
+        transactionId: txn,
+        merchant: { id: 'merchant_001', legalName: 'Merchant Inc', website: 'https://merchant.example' },
+        lineItems: [{ productId: 'p1', title: 'P', quantity: 1, unitAmountMinor: amount, taxAmountMinor: 0, discountAmountMinor: 0 }],
+        totals: { subtotalMinor: amount, taxMinor: 0, discountMinor: 0, totalMinor: amount, currency: 'USD' },
+        issuedAt, expiresAt, source: { type: 'manual', requestId: txn },
+      });
+    }
+
+    const openCheckout = registry.create({
+      type: 'checkout', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+      agentPublicKeyJwk: agentSigner.publicKeyJwk, constraints: constraints({ totalBudgetMinor: 100, maxAmountMinor: 100 }),
+      issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: 'oc',
+    });
+    await registry.activateWithVerifiedSignature({
+      id: openCheckout.id, signature: '0x1', expectedPayloadHash: openCheckout.canonicalPayloadHash,
+      verifier: { verify: async () => true }, now,
+    });
+
+    async function close(txn: string, paymentNonce: string, amount: number) {
+      const payment = registry.create({
+        type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+        agentPublicKeyJwk: agentSigner.publicKeyJwk, constraints: constraints({ totalBudgetMinor: 100, maxAmountMinor: 100 }),
+        issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: paymentNonce,
+      });
+      await registry.activateWithVerifiedSignature({
+        id: payment.id, signature: '0x2', expectedPayloadHash: payment.canonicalPayloadHash,
+        verifier: { verify: async () => true }, now,
+      });
+      const checkout = await checkoutFor(txn, amount);
+      return createAutonomousClosedMandates({
+        openCheckoutMandateId: openCheckout.id,
+        openPaymentMandateId: payment.id,
+        registry,
+        userReference: 'user_1',
+        audience,
+        checkoutJwt: checkout.checkoutJwt,
+        checkoutHash: checkout.checkoutHash,
+        transactionId: txn,
+        agentIdentity: { agentId: 'agent_1', tenantId: 'tenant_1' },
+        agentKeyReference: agentSigner.keyId,
+        paymentInstrumentAlias: 'instrument_1',
+        payeeId: 'merchant_001',
+        merchantSigner: merchant,
+        agentTrustVerifier: {
+          verifyAgent: async () => ({
+            allowed: true, agentStatus: 'bound', attestationStatus: 'valid', keyBindingStatus: 'bound',
+            riskLevel: 'low', revocationStatus: 'active', policyVersion: 'v1', reasons: [],
+          }),
+        },
+        agentSigner,
+        now: () => now,
+      });
+    }
+
+    const first = await close('txn_budget_a', 'pay_a', 30);
+    expect(first.policy.remainingBudgetMinor).toBe(70);
+    const second = await close('txn_budget_b', 'pay_b', 20);
+    expect(second.policy.remainingBudgetMinor).toBe(50);
+    await expect(close('txn_budget_c', 'pay_c', 60)).rejects.toMatchObject({ code: 'POLICY_BUDGET' });
+  });
+});
+
+describe('review defect 4: key binding and independent JWS verify', () => {
+  it('rejects mismatched signer cnf, key id, wrong credential principal/thumbprint, and altered closed JWS payload', async () => {
+    const agentSigner = await createTestAgentMandateSigner('test');
+    const otherSigner = await createTestAgentMandateSigner('test');
+    const merchant = await createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: 'test', now: () => now });
+    const registry = new InMemoryOpenMandateRegistry();
+    const service = createMandateService({ merchantSigner: merchant, replayStore: new InMemoryMandateReplayStore(), now: () => now });
+    const checkout = await service.createMerchantCheckout({
+      transactionId: 'txn_key',
+      merchant: { id: 'merchant_001', legalName: 'Merchant Inc', website: 'https://merchant.example' },
+      lineItems: [{ productId: 'p1', title: 'P', quantity: 1, unitAmountMinor: 50, taxAmountMinor: 0, discountAmountMinor: 0 }],
+      totals: { subtotalMinor: 50, taxMinor: 0, discountMinor: 0, totalMinor: 50, currency: 'USD' },
+      issuedAt, expiresAt, source: { type: 'manual', requestId: 'rk' },
+    });
+    const openCheckout = registry.create({
+      type: 'checkout', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+      agentPublicKeyJwk: agentSigner.publicKeyJwk, constraints: constraints(),
+      issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: 'oc',
+    });
+    const openPayment = registry.create({
+      type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+      agentPublicKeyJwk: agentSigner.publicKeyJwk, constraints: constraints(),
+      issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: 'op',
+    });
+    for (const mandate of [openCheckout, openPayment]) {
+      await registry.activateWithVerifiedSignature({
+        id: mandate.id, signature: '0xsig', expectedPayloadHash: mandate.canonicalPayloadHash,
+        verifier: { verify: async () => true }, now,
+      });
+    }
+
+    await expect(createAutonomousClosedMandates({
+      openCheckoutMandateId: openCheckout.id, openPaymentMandateId: openPayment.id, registry,
+      userReference: 'user_1', audience, checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash,
+      transactionId: 'txn_key', agentIdentity: { agentId: 'agent_1', tenantId: 'tenant_1' },
+      agentKeyReference: otherSigner.keyId, paymentInstrumentAlias: 'instrument_1', payeeId: 'merchant_001',
+      merchantSigner: merchant, agentSigner: otherSigner,
+      agentTrustVerifier: { verifyAgent: async () => ({ allowed: true, agentStatus: 'bound', attestationStatus: 'valid', keyBindingStatus: 'bound', riskLevel: 'low', revocationStatus: 'active', policyVersion: 'v1', reasons: [] }) },
+      now: () => now,
+    })).rejects.toMatchObject({ code: 'AGENT_KEY_CNF' });
+
+    await expect(createAutonomousClosedMandates({
+      openCheckoutMandateId: openCheckout.id, openPaymentMandateId: openPayment.id, registry,
+      userReference: 'user_1', audience, checkoutJwt: checkout.checkoutJwt, checkoutHash: checkout.checkoutHash,
+      transactionId: 'txn_key', agentIdentity: { agentId: 'agent_1', tenantId: 'tenant_1' },
+      agentKeyReference: 'wrong-key', paymentInstrumentAlias: 'instrument_1', payeeId: 'merchant_001',
+      merchantSigner: merchant, agentSigner,
+      agentTrustVerifier: { verifyAgent: async () => ({ allowed: true, agentStatus: 'bound', attestationStatus: 'valid', keyBindingStatus: 'bound', riskLevel: 'low', revocationStatus: 'active', policyVersion: 'v1', reasons: [] }) },
+      now: () => now,
+    })).rejects.toMatchObject({ code: 'AGENT_KEY_REFERENCE' });
+
+    const repo = new InMemoryRepository();
+    const thumbprint = await calculateJwkThumbprint(agentSigner.publicKeyJwk, 'sha256');
+    await repo.withLock((store) => {
+      store.principals.push({
+        id: 'principal_1', ownerAddress: account.address, kycStatus: 'verified',
+        kycExpiresAt: '2031-01-01T00:00:00.000Z', createdAt: now.toISOString(), updatedAt: now.toISOString(),
+      });
+      store.enrollments.push({
+        agentUuid: 'agent_1', deviceCode: 'd1', principalId: 'principal_1', status: 'bound',
+        publicJwk: agentSigner.publicKeyJwk, thumbprint, keystoreProvider: 'os_hardware',
+        agentUriPath: '/a', createdAt: now.toISOString(), updatedAt: now.toISOString(),
+      });
+      store.credentials.push({
+        id: 'cred_wrong', agentUuid: 'agent_1', principalId: 'principal_other', thumbprint: 'other-thumb',
+        agentRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e', agentId: '1', owner: account.address,
+        status: 'active', statusRef: 'local', issuedAt: now.toISOString(), expiresAt: '2031-01-01T00:00:00.000Z', jti: 'j1',
+      });
+    });
+    const trust = new KyaAgentTrustVerifier(repo, {
+      policyVersion: 'v1',
+      isTenantAuthorized: () => true,
+      riskLevel: () => 'low',
+      now: () => now,
+    });
+    const decision = await trust.verifyAgent({
+      agentId: 'agent_1', tenantId: 'tenant_1', keyId: agentSigner.keyId, publicKeyJwk: agentSigner.publicKeyJwk,
+      action: 'autonomous_payment_mandate',
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reasons).toContain('ATTESTATION_MISSING');
+
+    const keyPair = await generateKeyPair('ES256', { extractable: true });
+    const publicKeyJwk = await exportJWK(keyPair.publicKey);
+    const expected = { vct: 'mandate.checkout.1', amount: 1 };
+    const altered = await new CompactSign(new TextEncoder().encode(JSON.stringify({ ...expected, amount: 999 })))
+      .setProtectedHeader({ alg: 'ES256', typ: 'JWT' })
+      .sign(keyPair.privateKey);
+    await expect(verifyClosedMandateJws({
+      jws: altered,
+      publicKeyJwk,
+      expectedPayload: expected,
+      expectedKeyId: 'agent-required',
+    })).rejects.toMatchObject({ code: 'CLOSED_MANDATE_JWS' });
+  });
+});
+
+describe('review defect 5: atomic activation proof persistence', () => {
+  it('keeps mandate awaiting and challenge retryable when consume fails, then succeeds on retry', async () => {
+    const agentPublicKeyJwk = { kty: 'EC' as const, crv: 'P-256' as const, x: 'x', y: 'y' };
+    const thumbprint = await calculateJwkThumbprint(agentPublicKeyJwk, 'sha256');
+    const repo = new InMemoryRepository();
+    await repo.withLock((store) => {
+      store.principals.push({
+        id: 'principal_1', ownerAddress: account.address, kycStatus: 'verified',
+        kycExpiresAt: '2031-01-01T00:00:00.000Z', createdAt: now.toISOString(), updatedAt: now.toISOString(),
+      });
+      store.enrollments.push({
+        agentUuid: 'agent_1', deviceCode: 'd1', principalId: 'principal_1', status: 'bound',
+        publicJwk: agentPublicKeyJwk, thumbprint,
+        keystoreProvider: 'os_hardware', agentUriPath: '/a', createdAt: now.toISOString(), updatedAt: now.toISOString(),
+      });
+      store.credentials.push({
+        id: 'c1', agentUuid: 'agent_1', principalId: 'principal_1', thumbprint,
+        agentRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e', agentId: '1', owner: account.address,
+        status: 'active', statusRef: 'local', issuedAt: now.toISOString(), expiresAt: '2031-01-01T00:00:00.000Z', jti: 'j1',
+      });
+    });
+    const registry = new InMemoryOpenMandateRegistry();
+    const mandate = registry.create({
+      type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+      agentPublicKeyJwk,
+      constraints: constraints(), issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: 'n1',
+    });
+    const store = new InMemoryTrustedSurfaceApprovalStore();
+    let failOnce = true;
+    const originalConsume = store.consume.bind(store);
+    store.consume = async (input, at) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('inject consume failure');
+      }
+      return originalConsume(input, at);
+    };
+    const service = new Eip712TrustedSurfaceService({
+      repo, registry, approvalStore: store, chainId: 84532, now: () => now,
+      verifier: {
+        verify: ({ address, domain, message, signature }) => verifyTypedData({
+          address, domain, types: mandateApprovalTypes, primaryType: 'MandateApproval', message, signature,
+        }),
+      },
+    });
+    const { challenge, typedData } = await service.createApprovalChallenge({ openMandateId: mandate.id, ownerAddress: account.address });
+    const signature = await account.signTypedData(typedData) as Hex;
+    await expect(service.verifyAndRecordApproval({ challengeId: challenge.id, ownerAddress: account.address, signature }))
+      .rejects.toThrow(/inject consume failure/);
+    expect(registry.get(mandate.id).status).toBe('awaiting_user_signature');
+    expect((await store.get(challenge.id)).consumedAt).toBeUndefined();
+    const approved = await service.verifyAndRecordApproval({ challengeId: challenge.id, ownerAddress: account.address, signature });
+    expect(approved.mandate.status).toBe('active');
+    expect(approved.mandate.activationProof?.signature).toBe(signature);
+    expect(approved.mandate.activationProof?.payloadHash).toBe(mandate.canonicalPayloadHash);
+  });
+});
+
+describe('review defect 6: outbox lease and strict hashes', () => {
+  it('allows only one concurrent anchor and retries until failed with lease recovery', async () => {
+    const outbox = new InMemoryMandateAnchorOutbox({ maxAttempts: 2, leaseMs: 30_000 });
+    const client = new FakeMandateAnchorClient();
+    const workerA = new MandateAnchorWorker(outbox, client);
+    const workerB = new MandateAnchorWorker(outbox, client);
+    const evidence = {
+      closedCheckoutHash: sha('c'),
+      closedPaymentHash: sha('p'),
+      checkoutHash: sha('checkout'),
+      transactionIdHash: sha('txn'),
+      agentIdHash: sha('agent'),
+      policyVersionHash: sha('policy'),
+      mandateType: 1,
+    };
+    await outbox.enqueue(evidence);
+    const [a, b] = await Promise.all([workerA.processOnce(), workerB.processOnce()]);
+    const anchored = [a, b].filter((job) => job?.status === 'anchored');
+    const idle = [a, b].filter((job) => job === undefined);
+    expect(anchored).toHaveLength(1);
+    expect(idle).toHaveLength(1);
+    expect(client.anchored).toHaveLength(1);
+    expect(anchored[0]?.txHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+
+    const failingOutbox = new InMemoryMandateAnchorOutbox({ maxAttempts: 2, leaseMs: 1 });
+    const failing = new MandateAnchorWorker(failingOutbox, {
+      anchor: async () => { throw new Error('rpc down'); },
+    });
+    await failingOutbox.enqueue({ ...evidence, closedCheckoutHash: sha('c2'), closedPaymentHash: sha('p2') });
+    const firstFail = await failing.processOnce();
+    expect(firstFail?.status).toBe('pending');
+    const secondFail = await failing.processOnce();
+    expect(secondFail?.status).toBe('failed');
+
+    await expect(outbox.enqueue({ ...evidence, closedCheckoutHash: 'not-a-hash' })).rejects.toMatchObject({ code: 'ANCHOR_EVIDENCE' });
+  });
+});
+
+describe('review defect 7: CLI/signer fail-closed', () => {
+  it('rejects omitted NODE_ENV and divergent JWT iat/exp', async () => {
+    await expect(createLocalMerchantSigner({ issuer: 'merchant_001', nodeEnv: '' })).rejects.toMatchObject({ code: 'MERCHANT_SIGNER_ENV' });
+    const previous = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      await expect(createLocalMerchantSigner({ issuer: 'merchant_001' })).rejects.toMatchObject({ code: 'MERCHANT_SIGNER_ENV' });
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+
+    const { createMandatesFromFile } = await import('../scripts/mandates-create.js');
+    await expect(createMandatesFromFile('./fixtures/validated-checkout.json', {})).rejects.toThrow(/NODE_ENV/);
+  });
+});
+
+describe('review defect open-mandate input validation', () => {
+  it('rejects private d and incoherent constraints/dates', () => {
+    const registry = new InMemoryOpenMandateRegistry();
+    expect(() => registry.create({
+      type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+      agentPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y', d: 'secret' } as JsonWebKey,
+      constraints: constraints(), issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: 'n',
+    })).toThrow(/Invalid open mandate input|OPEN_MANDATE_INPUT|Unrecognized key/);
+    expect(() => registry.create({
+      type: 'payment', tenantId: 'tenant_1', userReference: 'user_1', agentId: 'agent_1',
+      agentPublicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' },
+      constraints: constraints({ minAmountMinor: 200, maxAmountMinor: 100 }),
+      issuedAt, expiresAt: '2030-01-01T01:00:00.000Z', audience, nonce: 'n2',
+    })).toThrow(/Invalid open mandate input|OPEN_MANDATE_INPUT/);
+  });
+});

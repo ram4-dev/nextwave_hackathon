@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "environment": "demo",
+  "blockchain": {
+    "anchorNetwork": "bsc-testnet",
+    "chainId": 97,
+    "rpcUrlSource": "ANCHOR_RPC_URL (secret/configuration, not committed)",
+    "anchorContractAddress": null,
+    "requiredConfirmations": 3
+  },
+  "agents": [
+    {
+      "id": "agent_demo_001",
+      "tenantId": "tenant_demo",
+      "status": "bound",
+      "agentKeyId": "agent-key-demo-001",
+      "publicKeyJwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "EXAMPLE_PUBLIC_X_ONLY_NOT_A_REAL_KEY",
+        "y": "EXAMPLE_PUBLIC_Y_ONLY_NOT_A_REAL_KEY"
+      },
+      "kyaAttestationRef": "credential_demo_001",
+      "createdAt": "2030-01-01T00:00:00Z"
+    }
+  ],
+  "requests": [
+    {
+      "id": "request_demo_001",
+      "transactionId": "txn_demo_001",
+      "agentId": "agent_demo_001",
+      "tenantId": "tenant_demo",
+      "receivedAt": "2030-01-01T00:00:00Z",
+      "promptHash": "sha256-base64url-of-user-prompt-kept-off-chain",
+      "encryptedPromptRef": "encrypted-offchain://requests/request_demo_001",
+      "status": "checkout_created"
+    }
+  ],
+  "openMandates": [
+    {
+      "id": "open_checkout_demo_001",
+      "type": "checkout",
+      "status": "active",
+      "transactionScope": "tickets-concert-demo",
+      "tenantId": "tenant_demo",
+      "userReference": "user_ref_demo",
+      "agentId": "agent_demo_001",
+      "agentKeyId": "agent-key-demo-001",
+      "cnf": {
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "EXAMPLE_PUBLIC_X_ONLY_NOT_A_REAL_KEY",
+          "y": "EXAMPLE_PUBLIC_Y_ONLY_NOT_A_REAL_KEY"
+        }
+      },
+      "constraints": {
+        "merchantIds": ["merchant_demo"],
+        "payeeIds": ["merchant_demo"],
+        "productIds": ["ticket_standard"],
+        "supplierIds": ["supplier_demo"],
+        "maxQuantityPerProduct": 2,
+        "minAmountMinor": 100,
+        "maxAmountMinor": 100000,
+        "currency": "USD",
+        "totalBudgetMinor": 100000,
+        "maxOperations": 1,
+        "frequencyWindowSeconds": 86400,
+        "maxOperationsPerWindow": 1,
+        "paymentInstrumentAlias": "instrument_alias_demo"
+      },
+      "issuedAt": "2030-01-01T00:00:00Z",
+      "expiresAt": "2030-01-31T00:00:00Z",
+      "audience": "credential-provider",
+      "nonce": "open-checkout-nonce-demo",
+      "userSignatureStorageRef": "encrypted-offchain://signatures/open_checkout_demo_001"
+    },
+    {
+      "id": "open_payment_demo_001",
+      "type": "payment",
+      "status": "active",
+      "transactionScope": "tickets-concert-demo",
+      "tenantId": "tenant_demo",
+      "userReference": "user_ref_demo",
+      "agentId": "agent_demo_001",
+      "agentKeyId": "agent-key-demo-001",
+      "cnf": { "jwk": { "kty": "EC", "crv": "P-256", "x": "EXAMPLE_PUBLIC_X_ONLY_NOT_A_REAL_KEY", "y": "EXAMPLE_PUBLIC_Y_ONLY_NOT_A_REAL_KEY" } },
+      "constraints": {
+        "merchantIds": ["merchant_demo"], "payeeIds": ["merchant_demo"], "maxQuantityPerProduct": 2,
+        "minAmountMinor": 100, "maxAmountMinor": 100000, "currency": "USD", "totalBudgetMinor": 100000,
+        "maxOperations": 1, "frequencyWindowSeconds": 86400, "maxOperationsPerWindow": 1,
+        "paymentInstrumentAlias": "instrument_alias_demo"
+      },
+      "issuedAt": "2030-01-01T00:00:00Z",
+      "expiresAt": "2030-01-31T00:00:00Z",
+      "audience": "credential-provider",
+      "nonce": "open-payment-nonce-demo",
+      "userSignatureStorageRef": "encrypted-offchain://signatures/open_payment_demo_001"
+    }
+  ],
+  "closedMandates": [
+    {
+      "id": "closed_payment_demo_001",
+      "transactionId": "txn_demo_001",
+      "openCheckoutMandateId": "open_checkout_demo_001",
+      "openPaymentMandateId": "open_payment_demo_001",
+      "checkoutHash": "sha256-base64url-of-merchant-checkout-jwt",
+      "closedCheckoutHash": "sha256-base64url-of-agent-signed-checkout-mandate",
+      "closedPaymentHash": "sha256-base64url-of-agent-signed-payment-mandate",
+      "agentId": "agent_demo_001",
+      "policyVersion": "policy-demo-v1",
+      "status": "verified_pending_anchor",
+      "createdAt": "2030-01-02T00:00:00Z"
+    }
+  ],
+  "budgetReservations": [
+    {
+      "transactionId": "txn_demo_001",
+      "openMandateId": "open_payment_demo_001",
+      "amountMinor": 3150,
+      "currency": "USD",
+      "state": "reserved",
+      "createdAt": "2030-01-02T00:00:00Z"
+    }
+  ],
+  "anchorOutbox": [
+    {
+      "id": "anchor_demo_001",
+      "closedMandateId": "closed_payment_demo_001",
+      "status": "pending",
+      "attempts": 0,
+      "anchorPayload": {
+        "closedCheckoutHash": "sha256-base64url-of-agent-signed-checkout-mandate",
+        "closedPaymentHash": "sha256-base64url-of-agent-signed-payment-mandate",
+        "checkoutHash": "sha256-base64url-of-merchant-checkout-jwt",
+        "transactionIdHash": "sha256-base64url-of-transaction-id",
+        "agentIdHash": "sha256-base64url-of-agent-id",
+        "policyVersionHash": "sha256-base64url-of-policy-version"
+      }
+    }
+  ],
+  "auditEvents": [
+    {
+      "id": "audit_demo_001",
+      "transactionId": "txn_demo_001",
+      "event": "closed_mandate_verified",
+      "occurredAt": "2030-01-02T00:00:00Z",
+      "correlationId": "request_demo_001",
+      "detailsHash": "sha256-base64url-of-redacted-decision-details"
+    }
+  ]
+}

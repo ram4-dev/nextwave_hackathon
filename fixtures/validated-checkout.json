@@ -1,0 +1,19 @@
+{
+  "transactionId": "txn_demo_001",
+  "merchant": { "id": "merchant_demo", "legalName": "Demo Merchant LLC", "displayName": "Demo Merchant", "website": "https://merchant.example" },
+  "customerReference": "customer_ref_demo",
+  "lineItems": [{ "productId": "product_001", "title": "Demo product", "quantity": 2, "unitAmountMinor": 1250, "taxAmountMinor": 250, "discountAmountMinor": 100 }],
+  "shipping": { "optionId": "standard", "amountMinor": 500, "label": "Standard shipping" },
+  "totals": { "subtotalMinor": 2500, "taxMinor": 250, "discountMinor": 100, "totalMinor": 3150, "currency": "USD" },
+  "issuedAt": "2030-01-01T00:00:00Z",
+  "expiresAt": "2030-01-01T00:10:00Z",
+  "source": { "type": "manual", "requestId": "request_demo_001" },
+  "userReference": "user_ref_demo",
+  "checkoutMandate": { "nonce": "checkout_nonce_demo", "issuedAt": "2030-01-01T00:00:00Z", "expiresAt": "2030-01-01T00:10:00Z" },
+  "paymentMandate": {
+    "checkoutNonce": "payment_nonce_demo", "issuedAt": "2030-01-01T00:00:00Z", "expiresAt": "2030-01-01T00:10:00Z",
+    "payee": { "id": "merchant_demo", "name": "Demo Merchant", "website": "https://merchant.example" },
+    "paymentAmount": { "amountMinor": 3150, "currency": "USD" },
+    "paymentInstrument": { "id": "instrument_alias_demo", "type": "card", "descriptionMasked": "Card •••• 1234" }
+  }
+}
